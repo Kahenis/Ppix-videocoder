@@ -1,3 +1,9 @@
+#PROJET EN DÉVELOPPEMENT - L’APPLICATION EST en ALPHA 1.0 ET N'EST PAS ENCORE FONCTIONNELLE
+## Le fichier exécutable n'est proposé qu'à titre expérimental. Je décline toute responsabilité en cas de soucis sur votre PC. 
+## Je déconseille d'utiliser cette appli en version ALPHA. Lorsqu'elle sera en version Beta, une version exploitable V1.0Beta sera disponible
+C'est un développement personnel, merci de votre compréhension
+
+
 # Ppix-Videocoder
 
 Application Windows autonome pour optimiser les codecs vidéo de vos bibliothèques **Plex**.
@@ -19,36 +25,6 @@ Allez dans [Releases](https://github.com/Kahenis/Ppix-videocoder/releases) et t�
 2. Lancez `Ppix-Videocoder.exe`
 3. C’est tout (FFmpeg est déjà dedans)
 
-## Build automatique (GitHub Actions)
-
-À chaque tag `v*` (ex. `v1.0.0`) ou via *Actions → Build Windows EXE → Run workflow* :
-
-1. Télécharge FFmpeg Windows essentials
-2. Compile avec PyInstaller (dossier + FFmpeg embarqué)
-3. Produit un zip prêt à distribuer
-4. Crée une Release GitHub si un tag est poussé
-
-### Déclencher un build manuellement
-
-1. Onglet **Actions** du dépôt
-2. **Build Windows EXE** → **Run workflow**
-3. Téléchargez l’artifact `Ppix-Videocoder-windows`
-
-### Créer une release officielle
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-## Développement local (Windows)
-
-```bat
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-:: Placez ffmpeg.exe dans le dossier ffmpeg\
-python main.py
 ```
 
 ## Licence
