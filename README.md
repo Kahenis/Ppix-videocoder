@@ -1,6 +1,6 @@
-#PROJET EN DÉVELOPPEMENT - L’APPLICATION EST en ALPHA 1.0 ET N'EST PAS ENCORE FONCTIONNELLE
-## Le fichier exécutable n'est proposé qu'à titre expérimental. Je décline toute responsabilité en cas de soucis sur votre PC. 
-## Je déconseille d'utiliser cette appli en version ALPHA. Lorsqu'elle sera en version Beta, une version exploitable V1.0Beta sera disponible
+##PROJET EN DÉVELOPPEMENT - L’APPLICATION EST en ALPHA 1.0 ET N'EST PAS ENCORE FONCTIONNELLE
+# Le fichier exécutable n'est proposé qu'à titre expérimental. Je décline toute responsabilité en cas de soucis sur votre PC. 
+# Je déconseille d'utiliser cette appli en version ALPHA. Lorsqu'elle sera en version Beta, une version exploitable V1.0Beta sera disponible
 C'est un développement personnel, merci de votre compréhension
 
 
