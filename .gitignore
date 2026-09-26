@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.spec
+.env
+*.exe
+ffmpeg/ffmpeg.exe
+ffmpeg/ffprobe.exe
+ffmpeg/ffplay.exe
+.DS_Store
+*.log
