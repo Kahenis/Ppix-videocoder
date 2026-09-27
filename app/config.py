@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
@@ -69,27 +69,13 @@ HARDWARE_OPTIONS = {
 }
 
 DEFAULT_SETTINGS = {
-    "preferred_codec": "hevc",
-    "min_keep_codec": "h264",
-    "auto_replace": False,
-    "crf": 24,
-    "preset": "medium",
-    "audio_bitrate": "192k",
-    "audio_channels": 2,
-    "keep_audio_copy": False,
-    "hardware_accel": "none",
-    "container": "mp4",
-    "dry_run": False,
-    "max_parallel_encodes": 1,
-    "refresh_plex_after": True,
-    "server_url": "",
-    "token": "",
-    "last_server_name": "",
-    "network_root": "",
-    "plex_prefix": "",
-    "path_maps": [],
-    "mkv_for_legacy": True,
-    "hw_detected": False,
+    "preferred_codec": "hevc", "min_keep_codec": "h264", "auto_replace": False,
+    "crf": 24, "preset": "medium", "audio_bitrate": "192k", "audio_channels": 2,
+    "keep_audio_copy": False, "hardware_accel": "none", "container": "mp4",
+    "dry_run": False, "max_parallel_encodes": 1, "refresh_plex_after": True,
+    "server_url": "", "token": "", "last_server_name": "",
+    "network_root": "", "plex_prefix": "", "path_maps": [],
+    "mkv_for_legacy": True, "hw_detected": False,
 }
 
 
@@ -200,12 +186,7 @@ def common_path_prefix(paths: list) -> str:
     return prefix
 
 
-def apply_path_maps(
-    file_path: str,
-    path_maps: list = None,
-    network_root: str = "",
-    plex_prefix: str = "",
-) -> str:
+def apply_path_maps(file_path: str, path_maps: list = None, network_root: str = "", plex_prefix: str = "") -> str:
     if not file_path:
         return file_path
     root = (network_root or "").strip()
@@ -215,11 +196,7 @@ def apply_path_maps(
         if prefix:
             matched = False
             rest = ""
-            for s, pr in (
-                (_win_sep(src), _win_sep(prefix)),
-                (src.replace("\\", "/"), prefix.replace("\\", "/")),
-                (src, prefix),
-            ):
+            for s, pr in ((_win_sep(src), _win_sep(prefix)), (src.replace("\\", "/"), prefix.replace("\\", "/")), (src, prefix)):
                 if pr and s.lower().startswith(pr.lower()):
                     rest = s[len(pr):]
                     matched = True
@@ -236,11 +213,7 @@ def apply_path_maps(
         name = Path(_win_sep(file_path)).name
         return root.rstrip("\\/") + "\\" + name
     maps = path_maps or []
-    ordered = sorted(
-        [m for m in maps if m.get("from") and m.get("to")],
-        key=lambda m: len(str(m["from"])),
-        reverse=True,
-    )
+    ordered = sorted([m for m in maps if m.get("from") and m.get("to")], key=lambda m: len(str(m["from"])), reverse=True)
     candidates = [file_path, file_path.replace("\\", "/"), file_path.replace("/", "\\")]
     for src in candidates:
         for m in ordered:
@@ -263,9 +236,7 @@ def path_exists_for_open(path: str) -> bool:
         return False
     try:
         p = Path(path)
-        if p.exists():
-            return True
-        if p.parent.exists():
+        if p.exists() or p.parent.exists():
             return True
     except Exception:
         pass
