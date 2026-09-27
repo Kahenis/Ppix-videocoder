@@ -6,238 +6,209 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.5.2"
+APP_VERSION = "1.5.3"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
+# Codecs d'encodage supportés (clés internes)
 SUPPORTED_CODECS = {
-    "hevc": {"label": "H.265 / x265 (recommandé)", "ffmpeg_v": "libx265", "ffmpeg_a": "aac", "container": "mp4", "tag": "hvc1"},
-    "h264": {"label": "H.264 / x264 (plus compatible)", "ffmpeg_v": "libx264", "ffmpeg_a": "aac", "container": "mp4", "tag": "avc1"},
+    "hevc": {
+        "label": "H.265 / x265 (recommandé)",
+        "ffmpeg_v": "libx265",
+        "ffmpeg_a": "aac",
+        "container": "mp4",
+        "tag": "hvc1",
+    },
+    "h264": {
+        "label": "H.264 / x264",
+        "ffmpeg_v": "libx264",
+        "ffmpeg_a": "aac",
+        "container": "mp4",
+        "tag": "avc1",
+    },
 }
 
-CODEC_CHOICE_LABELS = {"hevc": "H.265 (x265)", "h264": "H.264 (x264)"}
-
-CODEC_RANK = {
-    "mpeg1video": 5, "mpeg2video": 10, "mpeg2": 10, "mpeg4": 15,
-    "msmpeg4": 12, "msmpeg4v2": 12, "msmpeg4v3": 12,
-    "wmv1": 8, "wmv2": 8, "wmv3": 10, "vc1": 12,
-    "vp6": 12, "vp6f": 12, "vp8": 25, "vp9": 45, "av1": 70,
-    "theora": 15, "flv1": 8, "h263": 8,
-    "rv10": 5, "rv20": 5, "rv30": 8, "rv40": 10,
-    "rawvideo": 0, "prores": 40, "dnxhd": 35, "cineform": 35,
-    "h264": 50, "avc": 50, "hevc": 60, "h265": 60,
+CODEC_CHOICE_LABELS = {
+    "hevc": "H.265",
+    "h264": "H.264",
 }
 
+# Options affichées pour le filtre "ne pas lister les fichiers déjà en…"
 MIN_KEEP_OPTIONS = {
-    "h264": "H.264 et mieux (ne pas lister H.264 / H.265)",
-    "hevc": "H.265 uniquement (lister tout sauf H.265)",
     "none": "Tout lister (aucun filtre)",
+    "h264": "H.264 ou mieux (ne pas lister H.264/H.265)",
+    "hevc": "H.265 uniquement (ne pas lister H.265)",
 }
-
-NON_OPTIMAL_CODECS = {
-    "mpeg2video", "mpeg2", "mpeg4", "msmpeg4", "msmpeg4v2", "msmpeg4v3",
-    "wmv1", "wmv2", "wmv3", "vc1", "vp6", "vp6f", "vp8", "theora",
-    "flv1", "h263", "rv10", "rv20", "rv30", "rv40", "rawvideo",
-    "prores", "dnxhd", "cineform",
-}
-
-QUALITY_OPTIONS = [
-    (18, "Excellente (fichier plus lourd)"), (20, "Très bonne"), (22, "Bonne"),
-    (24, "Équilibrée (recommandé)"), (26, "Correcte (fichier plus léger)"),
-    (28, "Économique (fichier léger)"),
-]
-
-AUDIO_BITRATE_OPTIONS = [
-    ("96k", "96 kb/s — basique"), ("128k", "128 kb/s — standard"),
-    ("160k", "160 kb/s — bonne"), ("192k", "192 kb/s — recommandée"),
-    ("256k", "256 kb/s — haute"), ("320k", "320 kb/s — maximale"),
-]
 
 PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
 
-PLEX_SAFE_AUDIO_CODECS = {
-    "aac", "mp3", "ac3", "eac3", "flac", "pcm", "pcm_s16le", "pcm_s24le",
-    "pcm_bluray", "mp2", "mp1",
-}
-
-LEGACY_CONTAINERS = {"avi", "wmv", "asf", "divx", "xvid", "mpg", "mpeg", "vob", "flv"}
-
 HARDWARE_OPTIONS = {
-    "none": "Aucune — processeur seul (compatible partout)",
-    "nvenc": "Carte NVIDIA (rapide — drivers récents requis)",
-    "qsv": "Puce graphique Intel intégrée (Quick Sync)",
-    "amf": "Carte graphique AMD (plus rapide si vous en avez une)",
+    "none": "CPU (logiciel)",
+    "auto": "Auto (détecter GPU)",
+    "nvenc": "NVIDIA NVENC",
+    "qsv": "Intel Quick Sync",
+    "amf": "AMD AMF",
 }
+
+QUALITY_OPTIONS = [
+    (18, "Très haute qualité (gros fichiers)"),
+    (20, "Haute qualité"),
+    (22, "Bonne qualité"),
+    (24, "Équilibré (recommandé)"),
+    (26, "Plus petit"),
+    (28, "Petit (qualité réduite)"),
+]
+
+AUDIO_BITRATE_OPTIONS = ["128k", "160k", "192k", "256k", "320k"]
+
+# Conteneurs considérés comme « legacy » → forcer MKV si option active
+LEGACY_CONTAINERS = {"avi", "wmv", "mpeg", "mpg", "vob", "flv", "divx", "xvid", "asf", "rm", "rmvb"}
+
+# Codecs audio sûrs pour Plex Direct Play (pas de transcodage côté serveur)
+PLEX_SAFE_AUDIO_CODECS = {"aac", "mp3", "ac3", "eac3", "flac", "opus", "pcm", "truehd", "dts"}
 
 DEFAULT_SETTINGS = {
-    "preferred_codec": "hevc", "min_keep_codec": "h264", "auto_replace": False,
-    "crf": 24, "preset": "medium", "audio_bitrate": "192k", "audio_channels": 2,
-    "keep_audio_copy": False, "hardware_accel": "none", "container": "mp4",
-    "dry_run": False, "max_parallel_encodes": 1, "refresh_plex_after": True,
-    "server_url": "", "token": "", "last_server_name": "",
-    "network_root": "", "plex_prefix": "", "path_maps": [],
-    "mkv_for_legacy": True, "hw_detected": False,
+    "preferred_codec": "hevc",
+    "min_keep_codec": "h264",
+    "auto_replace": False,
+    "crf": 24,
+    "preset": "medium",
+    "audio_bitrate": "192k",
+    "audio_channels": 2,
+    "keep_audio_copy": True,
+    "hardware_accel": "auto",
+    "container": "mp4",
+    "mkv_for_legacy": True,
+    "dry_run": False,
+    "refresh_plex_after": True,
+    "network_root": "",
+    "plex_prefix": "",
+    "path_maps": [],
+    "server_url": "",
+    "token": "",
 }
 
 
-def get_app_dir() -> Path:
+def _settings_path() -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent
+        base = Path(sys.executable).parent
+    else:
+        base = Path.home() / ".ppix-videocoder"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "settings.json"
 
 
-def get_config_dir() -> Path:
-    base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-    path = base / APP_NAME
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def get_settings_path() -> Path:
-    return get_config_dir() / "settings.json"
-
-
-def get_history_path() -> Path:
-    return get_config_dir() / "history.json"
+def _history_path() -> Path:
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).parent
+    else:
+        base = Path.home() / ".ppix-videocoder"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "history.json"
 
 
 def load_settings() -> dict:
-    path = get_settings_path()
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            settings = DEFAULT_SETTINGS.copy()
-            settings.update(data)
-            return settings
-        except Exception:
-            pass
-    return DEFAULT_SETTINGS.copy()
+    p = _settings_path()
+    if not p.exists():
+        return dict(DEFAULT_SETTINGS)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        out = dict(DEFAULT_SETTINGS)
+        out.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS or k in ("path_maps", "server_url", "token")})
+        return out
+    except Exception:
+        return dict(DEFAULT_SETTINGS)
 
 
 def save_settings(settings: dict) -> None:
-    path = get_settings_path()
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2, ensure_ascii=False)
+    p = _settings_path()
+    try:
+        p.write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def load_history() -> list:
-    path = get_history_path()
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
+    p = _history_path()
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
 
 
 def save_history(history: list) -> None:
-    path = get_history_path()
-    history = history[-200:]
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(history, f, indent=2, ensure_ascii=False)
+    p = _history_path()
+    try:
+        # garder les 200 derniers
+        p.write_text(json.dumps(history[-200:], indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
 
 
-def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:
-    if min_keep == "none":
+def is_legacy_container(cont: str) -> bool:
+    return (cont or "").lower().lstrip(".") in LEGACY_CONTAINERS
+
+
+def is_audio_safe_for_plex(codec: str) -> bool:
+    c = (codec or "").lower().strip()
+    if not c:
         return False
-    vc = (video_codec or "").lower()
-    rank = CODEC_RANK.get(vc, 0)
-    threshold = CODEC_RANK.get(min_keep, 50)
-    if vc in ("h265",):
-        rank = CODEC_RANK["hevc"]
-    if vc in ("avc",):
-        rank = CODEC_RANK["h264"]
-    return rank >= threshold
-
-
-def is_audio_safe_for_plex(audio_codec: str) -> bool:
-    ac = (audio_codec or "").lower().strip()
-    if not ac:
-        return False
-    if ac.startswith("pcm"):
+    # normaliser quelques variantes
+    if c in ("mp2", "mpa"):
         return True
-    return ac in PLEX_SAFE_AUDIO_CODECS
-
-
-def is_legacy_container(container: str) -> bool:
-    return (container or "").lower().strip() in LEGACY_CONTAINERS
-
-
-def _win_sep(p: str) -> str:
-    return (p or "").replace("/", "\\")
+    return c in PLEX_SAFE_AUDIO_CODECS or c.startswith("pcm")
 
 
 def common_path_prefix(paths: list) -> str:
+    """Préfixe commun le plus long des chemins (séparateurs normalisés)."""
     if not paths:
         return ""
-    norms = [_win_sep(p).rstrip("\\") for p in paths if p]
-    if not norms:
+    norm = [p.replace("\\", "/").rstrip("/") for p in paths if p]
+    if not norm:
         return ""
-    prefix = norms[0]
-    for p in norms[1:]:
-        while prefix and not p.lower().startswith(prefix.lower()):
-            if "\\" not in prefix:
-                prefix = ""
-                break
-            prefix = prefix.rsplit("\\", 1)[0]
+    prefix = norm[0]
+    for p in norm[1:]:
+        while prefix and not p.startswith(prefix):
+            prefix = prefix.rsplit("/", 1)[0] if "/" in prefix else ""
         if not prefix:
             break
-    return prefix
+    return prefix.replace("/", "\\") if "\\" in paths[0] else prefix
 
 
-def apply_path_maps(file_path: str, path_maps: list = None, network_root: str = "", plex_prefix: str = "") -> str:
-    if not file_path:
-        return file_path
-    root = (network_root or "").strip()
-    prefix = (plex_prefix or "").strip()
-    if root:
-        src = file_path
-        if prefix:
-            matched = False
-            rest = ""
-            for s, pr in ((_win_sep(src), _win_sep(prefix)), (src.replace("\\", "/"), prefix.replace("\\", "/")), (src, prefix)):
-                if pr and s.lower().startswith(pr.lower()):
-                    rest = s[len(pr):]
-                    matched = True
-                    break
-            if not matched:
-                rest = "\\" + _win_sep(src).lstrip("\\")
-            rest = rest.replace("/", "\\")
-            if rest and not rest.startswith("\\"):
-                rest = "\\" + rest
-            root_n = root.rstrip("\\/")
-            if len(root_n) == 2 and root_n[1] == ":":
-                return root_n + "\\" + rest.lstrip("\\")
-            return root_n + rest
-        name = Path(_win_sep(file_path)).name
-        return root.rstrip("\\/") + "\\" + name
-    maps = path_maps or []
-    ordered = sorted([m for m in maps if m.get("from") and m.get("to")], key=lambda m: len(str(m["from"])), reverse=True)
-    candidates = [file_path, file_path.replace("\\", "/"), file_path.replace("/", "\\")]
-    for src in candidates:
-        for m in ordered:
-            frm = str(m["from"])
-            to = str(m["to"])
-            if src.lower().startswith(frm.lower()):
-                rest = src[len(frm):]
-                if "\\" in to or (len(to) >= 2 and to[1] == ":"):
-                    rest = rest.replace("/", "\\")
-                    if rest and not rest.startswith("\\"):
-                        rest = "\\" + rest.lstrip("\\")
-                    return to.rstrip("\\/") + rest
-                rest = rest.replace("\\", "/")
-                return to.rstrip("/") + rest
-    return file_path
+def apply_path_maps(
+    path: str,
+    path_maps: list | None = None,
+    network_root: str = "",
+    plex_prefix: str = "",
+) -> str:
+    """Applique les correspondances de chemins (NAS → Windows)."""
+    if not path:
+        return path
+    mapped = path
+    # 1) maps explicites
+    for m in path_maps or []:
+        src = (m.get("from") or m.get("src") or "").rstrip("\\/")
+        dst = (m.get("to") or m.get("dst") or "").rstrip("\\/")
+        if src and dst and (mapped.startswith(src) or mapped.replace("/", "\\").startswith(src.replace("/", "\\"))):
+            rest = mapped[len(src):].lstrip("\\/")
+            mapped = str(Path(dst) / rest) if rest else dst
+            break
+    # 2) racine réseau + préfixe Plex
+    nr = (network_root or "").rstrip("\\/")
+    pp = (plex_prefix or "").rstrip("\\/")
+    if nr and pp:
+        # si le chemin commence encore par le préfixe Plex, le remplacer
+        cand = mapped.replace("/", "\\")
+        pp_n = pp.replace("/", "\\")
+        if cand.lower().startswith(pp_n.lower()):
+            rest = cand[len(pp_n):].lstrip("\\")
+            mapped = str(Path(nr) / rest) if rest else nr
+    return mapped
 
 
 def path_exists_for_open(path: str) -> bool:
-    if not path:
-        return False
     try:
-        p = Path(path)
-        if p.exists() or p.parent.exists():
-            return True
+        return Path(path).exists()
     except Exception:
-        pass
-    return False
+        return False
