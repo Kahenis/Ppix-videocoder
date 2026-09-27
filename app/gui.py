@@ -19,6 +19,7 @@ from .config import (
 from .plex_client import PlexClient, VideoInfo
 from .encoder import Encoder, EncodeJob
 from .logger import log, read_log, clear_log, open_log_folder, get_log_path
+from .about_dialog import show_about
 
 ACCENT = "#E5A00D"
 BG = "#161616"
@@ -109,7 +110,8 @@ class App(ctk.CTk):
         ctk.CTkLabel(top, text="PPIX Videocoder", font=ctk.CTkFont(size=20, weight="bold"), text_color=ACCENT).pack(side="left", padx=16, pady=12)
         self.lbl_conn = ctk.CTkLabel(top, text="Non connecte", text_color=MUTED)
         self.lbl_conn.pack(side="left", padx=8)
-        ctk.CTkButton(top, text="Parametres", width=110, fg_color="#333", hover_color="#444", command=self._show_settings).pack(side="right", padx=12)
+        ctk.CTkButton(top, text="Quitter", width=90, fg_color=DANGER, hover_color=DANGER_HOVER, command=self._close).pack(side="right", padx=(4, 12))
+        ctk.CTkButton(top, text="Parametres", width=110, fg_color="#333", hover_color="#444", command=self._show_settings).pack(side="right", padx=4)
         ctk.CTkButton(top, text="Historique", width=100, fg_color="#333", hover_color="#444", command=self._show_history).pack(side="right", padx=4)
         nav = ctk.CTkFrame(self, fg_color=BG)
         nav.pack(fill="x", padx=14, pady=(8, 0))
@@ -794,6 +796,7 @@ class App(ctk.CTk):
         ctk.CTkButton(log_row, text="Copier journal", width=130, fg_color="#333", command=copy_log).pack(side="left", padx=4)
         ctk.CTkButton(log_row, text="Effacer", width=90, fg_color=DANGER, hover_color=DANGER_HOVER, command=wipe_log).pack(side="left", padx=4)
         ctk.CTkLabel(scroll, text=f"Fichier : {get_log_path()}", text_color=MUTED, wraplength=540).pack(anchor="w", pady=(0, 8))
+        ctk.CTkButton(scroll, text="À propos", width=120, fg_color="#333", command=lambda: self._show_about(d)).pack(anchor="w", pady=(8, 0))
         def save():
             self.settings["preferred_codec"] = codec_l2k.get(pref_label.get(), "hevc")
             self.settings["min_keep_codec"] = mk_l2k.get(mk_var.get(), "h264")
@@ -813,6 +816,9 @@ class App(ctk.CTk):
             self._log("Parametres enregistres.")
             d.destroy()
         ctk.CTkButton(scroll, text="Enregistrer", fg_color=ACCENT, text_color="#111", hover_color="#C48A0B", command=save).pack(pady=16)
+
+    def _show_about(self, parent=None):
+        show_about(parent or self)
 
     def _show_history(self):
         d = ctk.CTkToplevel(self)
