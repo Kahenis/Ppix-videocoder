@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
@@ -79,6 +79,13 @@ PRESETS = [
     "medium", "slow", "slower", "veryslow",
 ]
 
+PLEX_SAFE_AUDIO_CODECS = {
+    "aac", "mp3", "ac3", "eac3", "flac", "pcm", "pcm_s16le", "pcm_s24le",
+    "pcm_bluray", "mp2", "mp1",
+}
+
+LEGACY_CONTAINERS = {"avi", "wmv", "asf", "divx", "xvid", "mpg", "mpeg", "vob", "flv"}
+
 HARDWARE_OPTIONS = {
     "none": "Aucune — processeur seul (compatible partout)",
     "nvenc": "Carte NVIDIA (rapide — drivers récents requis)",
@@ -106,6 +113,8 @@ DEFAULT_SETTINGS = {
     "network_root": "",
     "plex_prefix": "",
     "path_maps": [],
+    "mkv_for_legacy": True,
+    "hw_detected": False,
 }
 
 
@@ -181,6 +190,19 @@ def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:
     return rank >= threshold
 
 
+def is_audio_safe_for_plex(audio_codec: str) -> bool:
+    ac = (audio_codec or "").lower().strip()
+    if not ac:
+        return False
+    if ac.startswith("pcm"):
+        return True
+    return ac in PLEX_SAFE_AUDIO_CODECS
+
+
+def is_legacy_container(container: str) -> bool:
+    return (container or "").lower().strip() in LEGACY_CONTAINERS
+
+
 def _win_sep(p: str) -> str:
     return (p or "").replace("/", "\\")
 
@@ -251,7 +273,7 @@ def apply_path_maps(
             to = str(m["to"])
             if src.lower().startswith(frm.lower()):
                 rest = src[len(frm):]
-                if "\\" in to or (len(to) >= 2 and to[1] == ":"):
+                if "\\" in to or (len(to) >= 2 and to[1] == ":":
                     rest = rest.replace("/", "\\")
                     if rest and not rest.startswith("\\"):
                         rest = "\\" + rest.lstrip("\\")
