@@ -6,21 +6,19 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
-# Default optimized codecs (preferred order)
-DEFAULT_PREFERRED_CODEC = "hevc"  # H.265 / x265
 SUPPORTED_CODECS = {
     "hevc": {
-        "label": "H.265 / HEVC (x265)",
+        "label": "H.265 / x265 (recommandé)",
         "ffmpeg_v": "libx265",
         "ffmpeg_a": "aac",
         "container": "mp4",
         "tag": "hvc1",
     },
     "h264": {
-        "label": "H.264 / AVC (x264)",
+        "label": "H.264 / x264 (plus compatible)",
         "ffmpeg_v": "libx264",
         "ffmpeg_a": "aac",
         "container": "mp4",
@@ -28,7 +26,29 @@ SUPPORTED_CODECS = {
     },
 }
 
-# Codecs considered "not optimized" by default (force transcoding on many clients)
+CODEC_CHOICE_LABELS = {
+    "hevc": "H.265 (x265)",
+    "h264": "H.264 (x264)",
+}
+
+CODEC_RANK = {
+    "mpeg1video": 5, "mpeg2video": 10, "mpeg2": 10, "mpeg4": 15,
+    "msmpeg4": 12, "msmpeg4v2": 12, "msmpeg4v3": 12,
+    "wmv1": 8, "wmv2": 8, "wmv3": 10, "vc1": 12,
+    "vp6": 12, "vp6f": 12, "vp8": 25, "vp9": 45, "av1": 70,
+    "theora": 15, "flv1": 8, "h263": 8,
+    "rv10": 5, "rv20": 5, "rv30": 8, "rv40": 10,
+    "rawvideo": 0, "prores": 40, "dnxhd": 35, "cineform": 35,
+    "h264": 50, "avc": 50,
+    "hevc": 60, "h265": 60,
+}
+
+MIN_KEEP_OPTIONS = {
+    "h264": "H.264 et mieux (ne pas lister H.264 / H.265)",
+    "hevc": "H.265 uniquement (lister tout sauf H.265)",
+    "none": "Tout lister (aucun filtre)",
+}
+
 NON_OPTIMAL_CODECS = {
     "mpeg2video", "mpeg2", "mpeg4", "msmpeg4", "msmpeg4v2", "msmpeg4v3",
     "wmv1", "wmv2", "wmv3", "vc1", "vp6", "vp6f", "vp8", "theora",
@@ -36,8 +56,39 @@ NON_OPTIMAL_CODECS = {
     "prores", "dnxhd", "cineform",
 }
 
+QUALITY_OPTIONS = [
+    (18, "Excellente (fichier plus lourd)"),
+    (20, "Très bonne"),
+    (22, "Bonne"),
+    (24, "Équilibrée (recommandé)"),
+    (26, "Correcte (fichier plus léger)"),
+    (28, "Économique (fichier léger)"),
+]
+
+AUDIO_BITRATE_OPTIONS = [
+    ("96k", "96 kb/s — basique"),
+    ("128k", "128 kb/s — standard"),
+    ("160k", "160 kb/s — bonne"),
+    ("192k", "192 kb/s — recommandée"),
+    ("256k", "256 kb/s — haute"),
+    ("320k", "320 kb/s — maximale"),
+]
+
+PRESETS = [
+    "ultrafast", "superfast", "veryfast", "faster", "fast",
+    "medium", "slow", "slower", "veryslow",
+]
+
+HARDWARE_OPTIONS = {
+    "none": "Aucune — processeur seul (compatible partout)",
+    "nvenc": "Carte graphique NVIDIA (plus rapide si vous en avez une)",
+    "qsv": "Puce graphique Intel intégrée (Quick Sync)",
+    "amf": "Carte graphique AMD (plus rapide si vous en avez une)",
+}
+
 DEFAULT_SETTINGS = {
     "preferred_codec": "hevc",
+    "min_keep_codec": "h264",
     "auto_replace": False,
     "crf": 24,
     "preset": "medium",
@@ -54,21 +105,8 @@ DEFAULT_SETTINGS = {
     "last_server_name": "",
 }
 
-PRESETS = [
-    "ultrafast", "superfast", "veryfast", "faster", "fast",
-    "medium", "slow", "slower", "veryslow"
-]
-
-HARDWARE_OPTIONS = {
-    "none": "Logiciel (CPU)",
-    "nvenc": "NVIDIA NVENC (hevc_nvenc / h264_nvenc)",
-    "qsv": "Intel Quick Sync (hevc_qsv / h264_qsv)",
-    "amf": "AMD AMF (hevc_amf / h264_amf)",
-}
-
 
 def get_app_dir() -> Path:
-    """Directory of the running app (works for frozen PyInstaller exe)."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent
@@ -125,3 +163,17 @@ def save_history(history: list) -> None:
     history = history[-200:]
     with open(path, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2, ensure_ascii=False)
+
+
+def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:
+    """True si le fichier est déjà assez bon et ne doit PAS apparaître."""
+    if min_keep == "none":
+        return False
+    vc = (video_codec or "").lower()
+    rank = CODEC_RANK.get(vc, 0)
+    threshold = CODEC_RANK.get(min_keep, 50)
+    if vc in ("h265",):
+        rank = CODEC_RANK["hevc"]
+    if vc in ("avc",):
+        rank = CODEC_RANK["h264"]
+    return rank >= threshold
