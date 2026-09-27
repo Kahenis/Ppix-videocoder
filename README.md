@@ -1,5 +1,5 @@
 # PROJET EN DÉVELOPPEMENT - L’APPLICATION EST MAINTENANT EN BETA ET DISTRIBUABLE POUR TESTS
-Le fichier exécutable n'est proposé qu'à titre de tests. Normalement riend e grave ne peut se passer sur les bibliothèques, toutefois je décline toute responsabilité en cas de soucis sur votre Plex. 
+Le fichier exécutable n'est proposé qu'à titre de tests. Normalement rien de grave ne peut se passer sur les bibliothèques, toutefois je décline toute responsabilité en cas de soucis sur votre Plex. 
 ## Version passée de Alpha à Beta et fonctionnelle. Des bugs peuvent toutefois apapraitrent .Merci de nous les signaler.  
 C'est un développement personnel, merci de votre compréhension
 
