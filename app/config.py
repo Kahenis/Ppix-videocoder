@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
@@ -103,6 +103,7 @@ DEFAULT_SETTINGS = {
     "server_url": "",
     "token": "",
     "last_server_name": "",
+    "path_maps": [],
 }
 
 
@@ -166,7 +167,6 @@ def save_history(history: list) -> None:
 
 
 def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:
-    """True si le fichier est déjà assez bon et ne doit PAS apparaître."""
     if min_keep == "none":
         return False
     vc = (video_codec or "").lower()
@@ -177,3 +177,49 @@ def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:
     if vc in ("avc",):
         rank = CODEC_RANK["h264"]
     return rank >= threshold
+
+
+def normalize_path_key(p: str) -> str:
+    if not p:
+        return ""
+    return p.replace("/", "\\").rstrip("\\")
+
+
+def apply_path_maps(file_path: str, path_maps: list) -> str:
+    if not file_path:
+        return file_path
+    maps = path_maps or []
+    ordered = sorted(
+        [m for m in maps if m.get("from") and m.get("to")],
+        key=lambda m: len(str(m["from"])),
+        reverse=True,
+    )
+    candidates = [file_path, file_path.replace("\\", "/"), file_path.replace("/", "\\")]
+    for src in candidates:
+        for m in ordered:
+            frm = str(m["from"])
+            to = str(m["to"])
+            if src.lower().startswith(frm.lower()):
+                rest = src[len(frm):]
+                if "\\" in to or (len(to) >= 2 and to[1] == ":"):
+                    rest = rest.replace("/", "\\")
+                    if rest and not rest.startswith("\\"):
+                        rest = "\\" + rest.lstrip("\\")
+                    return to.rstrip("\\/") + rest
+                rest = rest.replace("\\", "/")
+                return to.rstrip("/") + rest
+    return file_path
+
+
+def path_exists_for_open(path: str) -> bool:
+    if not path:
+        return False
+    try:
+        p = Path(path)
+        if p.exists():
+            return True
+        if p.parent.exists():
+            return True
+    except Exception:
+        pass
+    return False
