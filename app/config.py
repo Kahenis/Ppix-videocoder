@@ -10,26 +10,11 @@ APP_VERSION = "1.5.0"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
-    "hevc": {
-        "label": "H.265 / x265 (recommandé)",
-        "ffmpeg_v": "libx265",
-        "ffmpeg_a": "aac",
-        "container": "mp4",
-        "tag": "hvc1",
-    },
-    "h264": {
-        "label": "H.264 / x264 (plus compatible)",
-        "ffmpeg_v": "libx264",
-        "ffmpeg_a": "aac",
-        "container": "mp4",
-        "tag": "avc1",
-    },
+    "hevc": {"label": "H.265 / x265 (recommandé)", "ffmpeg_v": "libx265", "ffmpeg_a": "aac", "container": "mp4", "tag": "hvc1"},
+    "h264": {"label": "H.264 / x264 (plus compatible)", "ffmpeg_v": "libx264", "ffmpeg_a": "aac", "container": "mp4", "tag": "avc1"},
 }
 
-CODEC_CHOICE_LABELS = {
-    "hevc": "H.265 (x265)",
-    "h264": "H.264 (x264)",
-}
+CODEC_CHOICE_LABELS = {"hevc": "H.265 (x265)", "h264": "H.264 (x264)"}
 
 CODEC_RANK = {
     "mpeg1video": 5, "mpeg2video": 10, "mpeg2": 10, "mpeg4": 15,
@@ -39,8 +24,7 @@ CODEC_RANK = {
     "theora": 15, "flv1": 8, "h263": 8,
     "rv10": 5, "rv20": 5, "rv30": 8, "rv40": 10,
     "rawvideo": 0, "prores": 40, "dnxhd": 35, "cineform": 35,
-    "h264": 50, "avc": 50,
-    "hevc": 60, "h265": 60,
+    "h264": 50, "avc": 50, "hevc": 60, "h265": 60,
 }
 
 MIN_KEEP_OPTIONS = {
@@ -57,27 +41,18 @@ NON_OPTIMAL_CODECS = {
 }
 
 QUALITY_OPTIONS = [
-    (18, "Excellente (fichier plus lourd)"),
-    (20, "Très bonne"),
-    (22, "Bonne"),
-    (24, "Équilibrée (recommandé)"),
-    (26, "Correcte (fichier plus léger)"),
+    (18, "Excellente (fichier plus lourd)"), (20, "Très bonne"), (22, "Bonne"),
+    (24, "Équilibrée (recommandé)"), (26, "Correcte (fichier plus léger)"),
     (28, "Économique (fichier léger)"),
 ]
 
 AUDIO_BITRATE_OPTIONS = [
-    ("96k", "96 kb/s — basique"),
-    ("128k", "128 kb/s — standard"),
-    ("160k", "160 kb/s — bonne"),
-    ("192k", "192 kb/s — recommandée"),
-    ("256k", "256 kb/s — haute"),
-    ("320k", "320 kb/s — maximale"),
+    ("96k", "96 kb/s — basique"), ("128k", "128 kb/s — standard"),
+    ("160k", "160 kb/s — bonne"), ("192k", "192 kb/s — recommandée"),
+    ("256k", "256 kb/s — haute"), ("320k", "320 kb/s — maximale"),
 ]
 
-PRESETS = [
-    "ultrafast", "superfast", "veryfast", "faster", "fast",
-    "medium", "slow", "slower", "veryslow",
-]
+PRESETS = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"]
 
 PLEX_SAFE_AUDIO_CODECS = {
     "aac", "mp3", "ac3", "eac3", "flac", "pcm", "pcm_s16le", "pcm_s24le",
@@ -273,7 +248,7 @@ def apply_path_maps(
             to = str(m["to"])
             if src.lower().startswith(frm.lower()):
                 rest = src[len(frm):]
-                if "\\" in to or (len(to) >= 2 and to[1] == ":":
+                if "\\" in to or (len(to) >= 2 and to[1] == ":"):
                     rest = rest.replace("/", "\\")
                     if rest and not rest.startswith("\\"):
                         rest = "\\" + rest.lstrip("\\")
