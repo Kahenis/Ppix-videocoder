@@ -32,6 +32,4 @@ Allez dans [Releases](https://github.com/Kahenis/Ppix-videocoder/releases) et t√
 Usage personnel libre.  
 FFmpeg : LGPL/GPL selon la build.  
 plexapi : BSD.
-<img width="1201" height="790" alt="pix3" src="https://github.com/user-attachments/assets/a7de8c5a-3446-4673-b98c-9140fecf3fdf" />
-<img width="1205" height="790" alt="pix2" src="https://github.com/user-attachments/assets/3766d0a9-3fb1-40b0-8f7d-59918810e806" />
-<img width="1200" height="792" alt="pix1" src="https://github.com/user-attachments/assets/31de7a70-9842-4a54-a06c-fa865568f90a" />
+
