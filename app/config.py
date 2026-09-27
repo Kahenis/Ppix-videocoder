@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
@@ -103,6 +103,8 @@ DEFAULT_SETTINGS = {
     "server_url": "",
     "token": "",
     "last_server_name": "",
+    "network_root": "",
+    "plex_prefix": "",
     "path_maps": [],
 }
 
@@ -179,15 +181,63 @@ def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:
     return rank >= threshold
 
 
-def normalize_path_key(p: str) -> str:
-    if not p:
+def _win_sep(p: str) -> str:
+    return (p or "").replace("/", "\\")
+
+
+def common_path_prefix(paths: list) -> str:
+    if not paths:
         return ""
-    return p.replace("/", "\\").rstrip("\\")
+    norms = [_win_sep(p).rstrip("\\") for p in paths if p]
+    if not norms:
+        return ""
+    prefix = norms[0]
+    for p in norms[1:]:
+        while prefix and not p.lower().startswith(prefix.lower()):
+            if "\\" not in prefix:
+                prefix = ""
+                break
+            prefix = prefix.rsplit("\\", 1)[0]
+        if not prefix:
+            break
+    return prefix
 
 
-def apply_path_maps(file_path: str, path_maps: list) -> str:
+def apply_path_maps(
+    file_path: str,
+    path_maps: list = None,
+    network_root: str = "",
+    plex_prefix: str = "",
+) -> str:
     if not file_path:
         return file_path
+    root = (network_root or "").strip()
+    prefix = (plex_prefix or "").strip()
+    if root:
+        src = file_path
+        if prefix:
+            matched = False
+            rest = ""
+            for s, pr in (
+                (_win_sep(src), _win_sep(prefix)),
+                (src.replace("\\", "/"), prefix.replace("\\", "/")),
+                (src, prefix),
+            ):
+                if pr and s.lower().startswith(pr.lower()):
+                    rest = s[len(pr):]
+                    matched = True
+                    break
+            if not matched:
+                rest = "\\" + _win_sep(src).lstrip("\\")
+            rest = rest.replace("/", "\\")
+            if rest and not rest.startswith("\\"):
+                rest = "\\" + rest
+            root_n = root.rstrip("\\/")
+            if len(root_n) == 2 and root_n[1] == ":":
+                return root_n + "\\" + rest.lstrip("\\")
+            return root_n + rest
+        name = Path(_win_sep(file_path)).name
+        return root.rstrip("\\/") + "\\" + name
     maps = path_maps or []
     ordered = sorted(
         [m for m in maps if m.get("from") and m.get("to")],
