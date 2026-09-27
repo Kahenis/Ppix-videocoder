@@ -1,6 +1,6 @@
-# PROJET EN DÉVELOPPEMENT - L’APPLICATION EST en ALPHA 1.0 ET N'EST PAS ENCORE FONCTIONNELLE
-Le fichier exécutable n'est proposé qu'à titre expérimental. Je décline toute responsabilité en cas de soucis sur votre PC. 
-## Je déconseille d'utiliser cette appli en version ALPHA. Lorsqu'elle sera en version Beta, une version exploitable V1.0Beta sera disponible
+# PROJET EN DÉVELOPPEMENT - L’APPLICATION EST MAINTENANT EN BETA ET DISTRIBUABLE POUR TESTS
+Le fichier exécutable n'est proposé qu'à titre de tests. Normalement riend e grave ne peut se passer sur les bibliothèques, toutefois je décline toute responsabilité en cas de soucis sur votre Plex. 
+## Version passée de Alpha à Beta et fonctionnelle. Des bugs peuvent toutefois apapraitrent .Merci de nous les signaler.  
 C'est un développement personnel, merci de votre compréhension
 
 
@@ -13,7 +13,7 @@ Application Windows autonome pour optimiser les codecs vidéo de vos bibliothèq
 - Détection des codecs non optimisés
 - Réencodage H.265 (prioritaire) ou H.264 avec **FFmpeg inclus**
 - File d’attente, barres de progression, arrêt possible
-- Paramètres avancés (CRF, preset, NVENC/QSV/AMF, remplacement auto…)
+- Paramètres avancés (CRF, preset, Encodage matériel (nvidia) ou logiciel (CPU), remplacement auto ou manuel…)
 
 **L’utilisateur n’a rien d’autre à télécharger** : l’EXE + FFmpeg sont fournis dans une seule archive.
 
