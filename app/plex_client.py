@@ -88,15 +88,19 @@ class PlexClient:
         except Exception:
             pass
 
-    def wait_for_pin(self, timeout: int = 300, poll: float = 2.0) -> bool:
+    def wait_for_pin(self, timeout: int = 300, poll: float = 1.5) -> bool:
+        """Poll until the PIN is claimed (auto, no user click). Returns True on success."""
         if not self.pin_login:
             return False
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.pin_login.checkLogin():
-                self.token = self.pin_login.token
-                self.account = MyPlexAccount(token=self.token)
-                return True
+            try:
+                if self.pin_login.checkLogin():
+                    self.token = self.pin_login.token
+                    self.account = MyPlexAccount(token=self.token)
+                    return True
+            except Exception:
+                pass
             if getattr(self.pin_login, "expired", False):
                 return False
             time.sleep(poll)
