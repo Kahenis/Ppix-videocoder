@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
@@ -81,7 +81,7 @@ PRESETS = [
 
 HARDWARE_OPTIONS = {
     "none": "Aucune — processeur seul (compatible partout)",
-    "nvenc": "Carte graphique NVIDIA (plus rapide si vous en avez une)",
+    "nvenc": "Carte NVIDIA (rapide — drivers récents requis)",
     "qsv": "Puce graphique Intel intégrée (Quick Sync)",
     "amf": "Carte graphique AMD (plus rapide si vous en avez une)",
 }
