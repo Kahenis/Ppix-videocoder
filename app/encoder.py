@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable, Optional, List
 
 from .config import SUPPORTED_CODECS, get_app_dir
+from .logger import log
 
 
 @dataclass
@@ -101,26 +102,54 @@ class Encoder:
         job.status = "running"
         job.start_time = time.time()
         job.original_size = os.path.getsize(job.video_path) if os.path.exists(job.video_path) else 0
+
+        log(f"Encode start: {job.video_path}")
+        log(f"  -> output: {job.output_path}")
+        log(f"  codec={job.codec} crf={job.crf} preset={job.preset} hw={job.hardware} dry={job.dry_run}")
+        log(f"  ffmpeg binary: {self.ffmpeg_path}")
+        log(f"  source exists: {os.path.exists(job.video_path)} size={job.original_size}")
+
+        if not os.path.exists(job.video_path):
+            job.status = "error"
+            job.message = f"Fichier source introuvable: {job.video_path}"
+            job.end_time = time.time()
+            log(job.message, level="ERROR")
+            if progress_cb:
+                progress_cb(0.0, job.message)
+            return job
+
         if job.dry_run:
             job.progress = 100.0
             job.status = "done"
             job.message = "Dry-run (aucune écriture)"
             job.end_time = time.time()
+            log(job.message)
             if progress_cb:
                 progress_cb(100.0, job.message)
             return job
+
         Path(job.output_path).parent.mkdir(parents=True, exist_ok=True)
         cmd = self.build_command(job)
+        log(f"  cmd: {' '.join(cmd)}")
+
+        ffmpeg_tail: List[str] = []
         try:
             creationflags = 0
             if sys.platform == "win32":
                 creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore
+
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                universal_newlines=True, encoding="utf-8", errors="replace",
-                bufsize=1, creationflags=creationflags,
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                creationflags=creationflags,
             )
             job.process = proc
+
             duration_s = 0.0
             for line in proc.stdout:
                 if self._stop_requested:
@@ -131,8 +160,15 @@ class Encoder:
                         proc.kill()
                     job.status = "cancelled"
                     job.message = "Annulé par l'utilisateur"
+                    log(job.message, level="WARN")
                     break
+
                 line = line.strip()
+                if line:
+                    ffmpeg_tail.append(line)
+                    if len(ffmpeg_tail) > 80:
+                        ffmpeg_tail = ffmpeg_tail[-80:]
+
                 if line.startswith("out_time_ms="):
                     try:
                         out_ms = int(line.split("=")[1]) / 1_000_000
@@ -148,6 +184,7 @@ class Encoder:
                     if m:
                         h, m_, s = m.groups()
                         duration_s = int(h) * 3600 + int(m_) * 60 + float(s)
+
             ret = proc.wait()
             if job.status != "cancelled":
                 if ret == 0 and os.path.exists(job.output_path):
@@ -155,12 +192,27 @@ class Encoder:
                     job.status = "done"
                     job.output_size = os.path.getsize(job.output_path)
                     job.message = "Terminé"
+                    log(f"Encode OK ({job.output_size} bytes)")
                 else:
                     job.status = "error"
+                    tail = "\n".join(ffmpeg_tail[-25:])
                     job.message = f"FFmpeg exit code {ret}"
+                    log(f"Encode FAIL exit={ret}", level="ERROR")
+                    log(f"FFmpeg last lines:\n{tail}", level="ERROR")
+                    low = tail.lower()
+                    if "no such file" in low or "cannot find" in low:
+                        job.message += " — fichier introuvable"
+                    elif "permission" in low:
+                        job.message += " — permission refusee"
+                    elif "invalid" in low and "encoder" in low:
+                        job.message += " — encodeur invalide (hardware ?)"
+                    elif "nvenc" in low or "cuda" in low:
+                        job.message += " — probleme NVIDIA/NVENC"
         except Exception as e:
             job.status = "error"
             job.message = str(e)
+            log(f"Encode exception: {e}", level="ERROR")
+            log("\n".join(ffmpeg_tail[-20:]), level="ERROR")
         finally:
             job.end_time = time.time()
             job.process = None
@@ -189,4 +241,5 @@ class Encoder:
             return True
         except Exception as e:
             job.message = f"Erreur remplacement: {e}"
+            log(job.message, level="ERROR")
             return False
