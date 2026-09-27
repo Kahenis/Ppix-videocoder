@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, List
 
-from .config import SUPPORTED_CODECS, get_app_dir
+from .config import SUPPORTED_CODECS, get_app_dir, is_audio_safe_for_plex
 from .logger import log
 
 
@@ -28,6 +28,9 @@ class EncodeJob:
     hardware: str = "none"
     container: str = "mp4"
     dry_run: bool = False
+    source_audio_codec: str = ""
+    source_container: str = ""
+    audio_mode: str = ""
     progress: float = 0.0
     status: str = "pending"
     message: str = ""
@@ -65,6 +68,28 @@ class Encoder:
                 return str(c)
         return "ffmpeg"
 
+    def detect_hardware(self) -> str:
+        try:
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore
+            proc = subprocess.run(
+                [self.ffmpeg_path, "-hide_banner", "-encoders"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=15, creationflags=creationflags,
+            )
+            out = (proc.stdout or "") + (proc.stderr or "")
+            low = out.lower()
+            if "hevc_nvenc" in low or "h264_nvenc" in low:
+                return "nvenc"
+            if "hevc_amf" in low or "h264_amf" in low:
+                return "amf"
+            if "hevc_qsv" in low or "h264_qsv" in low:
+                return "qsv"
+        except Exception as e:
+            log(f"Detection hardware: {e}", level="WARN")
+        return "none"
+
     def build_command(self, job: EncodeJob) -> List[str]:
         codec_info = SUPPORTED_CODECS.get(job.codec, SUPPORTED_CODECS["hevc"])
         vcodec = codec_info["ffmpeg_v"]
@@ -89,10 +114,21 @@ class Encoder:
                 cmd += ["-preset", "medium"]
         if tag and job.container == "mp4":
             cmd += ["-tag:v", tag]
+        do_copy = False
         if job.keep_audio_copy:
+            if is_audio_safe_for_plex(job.source_audio_codec):
+                do_copy = True
+            else:
+                log(
+                    f"Audio « {job.source_audio_codec or '?'} » non compatible Direct Play Plex "
+                    f"— réencodage AAC (la copie a été refusée)."
+                )
+        if do_copy:
             cmd += ["-c:a", "copy"]
+            job.audio_mode = "copy"
         else:
             cmd += ["-c:a", acodec, "-b:a", job.audio_bitrate, "-ac", str(job.audio_channels)]
+            job.audio_mode = "aac"
         cmd += ["-progress", "pipe:1", "-nostats", job.output_path]
         return cmd
 
@@ -102,13 +138,12 @@ class Encoder:
         job.status = "running"
         job.start_time = time.time()
         job.original_size = os.path.getsize(job.video_path) if os.path.exists(job.video_path) else 0
-
         log(f"Encode start: {job.video_path}")
         log(f"  -> output: {job.output_path}")
         log(f"  codec={job.codec} crf={job.crf} preset={job.preset} hw={job.hardware} dry={job.dry_run}")
+        log(f"  audio_src={job.source_audio_codec or '?'} keep_copy={job.keep_audio_copy}")
         log(f"  ffmpeg binary: {self.ffmpeg_path}")
         log(f"  source exists: {os.path.exists(job.video_path)} size={job.original_size}")
-
         if not os.path.exists(job.video_path):
             job.status = "error"
             job.message = f"Fichier source introuvable: {job.video_path}"
@@ -117,7 +152,6 @@ class Encoder:
             if progress_cb:
                 progress_cb(0.0, job.message)
             return job
-
         if job.dry_run:
             job.progress = 100.0
             job.status = "done"
@@ -127,29 +161,21 @@ class Encoder:
             if progress_cb:
                 progress_cb(100.0, job.message)
             return job
-
         Path(job.output_path).parent.mkdir(parents=True, exist_ok=True)
         cmd = self.build_command(job)
+        log(f"  audio_mode={job.audio_mode}")
         log(f"  cmd: {' '.join(cmd)}")
-
         ffmpeg_tail: List[str] = []
         try:
             creationflags = 0
             if sys.platform == "win32":
                 creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore
-
             proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                creationflags=creationflags,
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                universal_newlines=True, encoding="utf-8", errors="replace",
+                bufsize=1, creationflags=creationflags,
             )
             job.process = proc
-
             duration_s = 0.0
             for line in proc.stdout:
                 if self._stop_requested:
@@ -162,13 +188,11 @@ class Encoder:
                     job.message = "Annulé par l'utilisateur"
                     log(job.message, level="WARN")
                     break
-
                 line = line.strip()
                 if line:
                     ffmpeg_tail.append(line)
                     if len(ffmpeg_tail) > 80:
                         ffmpeg_tail = ffmpeg_tail[-80:]
-
                 if line.startswith("out_time_ms="):
                     try:
                         out_ms = int(line.split("=")[1]) / 1_000_000
@@ -184,7 +208,6 @@ class Encoder:
                     if m:
                         h, m_, s = m.groups()
                         duration_s = int(h) * 3600 + int(m_) * 60 + float(s)
-
             ret = proc.wait()
             if job.status != "cancelled":
                 if ret == 0 and os.path.exists(job.output_path):
