@@ -9,7 +9,7 @@ from typing import Optional, List
 from plexapi.myplex import MyPlexPinLogin, MyPlexAccount
 from plexapi.server import PlexServer
 
-from .config import CLIENT_IDENTIFIER, NON_OPTIMAL_CODECS, SUPPORTED_CODECS
+from .config import CLIENT_IDENTIFIER, NON_OPTIMAL_CODECS, SUPPORTED_CODECS, is_codec_acceptable
 
 
 @dataclass
@@ -72,7 +72,7 @@ class PlexClient:
         headers = {
             "X-Plex-Client-Identifier": CLIENT_IDENTIFIER,
             "X-Plex-Product": "Ppix-Videocoder",
-            "X-Plex-Version": "1.0.0",
+            "X-Plex-Version": "1.1.0",
             "X-Plex-Device": "Windows",
             "X-Plex-Platform": "Windows",
         }
@@ -89,7 +89,6 @@ class PlexClient:
             pass
 
     def wait_for_pin(self, timeout: int = 300, poll: float = 1.5) -> bool:
-        """Poll until the PIN is claimed (auto, no user click). Returns True on success."""
         if not self.pin_login:
             return False
         deadline = time.time() + timeout
@@ -137,44 +136,70 @@ class PlexClient:
             return []
         return [r.name for r in self.account.resources() if r.owned and r.provides == "server"]
 
-    def scan_libraries(self, preferred_codec: str = "hevc") -> List[VideoInfo]:
+    def scan_libraries(
+        self,
+        preferred_codec: str = "hevc",
+        min_keep_codec: str = "h264",
+        progress_cb=None,
+    ) -> List[VideoInfo]:
         if not self.server:
             return []
+
         results: List[VideoInfo] = []
-        sections = self.server.library.sections()
+        sections = [s for s in self.server.library.sections() if s.type in ("movie", "show")]
+        if not sections:
+            if progress_cb:
+                progress_cb(1, 1, "Aucune bibliothèque")
+            return results
+
+        counts = []
         for section in sections:
-            if section.type not in ("movie", "show"):
-                continue
             try:
                 items = section.all()
             except Exception:
-                continue
+                items = []
+            counts.append((section, items))
+
+        total = sum(len(items) for _, items in counts) or 1
+        done = 0
+        if progress_cb:
+            progress_cb(0, total, "Démarrage du scan…")
+
+        for section, items in counts:
             for item in items:
                 try:
-                    self._extract_videos(item, section, preferred_codec, results)
+                    self._extract_videos(item, section, preferred_codec, min_keep_codec, results)
                 except Exception:
-                    continue
+                    pass
+                done += 1
+                if progress_cb and (done % 3 == 0 or done >= total):
+                    progress_cb(done, total, f"{section.title} ({done}/{total})")
+
+        if progress_cb:
+            progress_cb(total, total, f"Terminé — {len(results)} fichier(s)")
         return results
 
-    def _extract_videos(self, item, section, preferred_codec: str, results: List[VideoInfo]):
+    def _extract_videos(self, item, section, preferred_codec: str, min_keep_codec: str,
+                        results: List[VideoInfo]):
         if section.type == "show":
             for episode in item.episodes():
-                self._process_media_item(episode, section, preferred_codec, results, series_title=item.title)
+                self._process_media_item(
+                    episode, section, preferred_codec, min_keep_codec, results,
+                    series_title=item.title,
+                )
         else:
-            self._process_media_item(item, section, preferred_codec, results)
+            self._process_media_item(item, section, preferred_codec, min_keep_codec, results)
 
-    def _process_media_item(self, item, section, preferred_codec: str, results: List[VideoInfo], series_title: str = ""):
+    def _process_media_item(self, item, section, preferred_codec: str, min_keep_codec: str,
+                            results: List[VideoInfo], series_title: str = ""):
         if not hasattr(item, "media") or not item.media:
             return
+
         for media in item.media:
             video_codec = (media.videoCodec or "").lower()
-            if preferred_codec == "auto":
-                if video_codec in ("h264", "hevc", "h265"):
-                    continue
-            else:
-                optimal = {"hevc": ("hevc", "h265"), "h264": ("h264",)}
-                if video_codec in optimal.get(preferred_codec, ()):
-                    continue
+            if is_codec_acceptable(video_codec, min_keep_codec):
+                continue
+
             for part in media.parts:
                 file_path = part.file or ""
                 if not file_path:
@@ -187,6 +212,9 @@ class PlexClient:
                     season_title = getattr(item, "parentTitle", "") or f"Season {season_number}"
                 if hasattr(item, "index"):
                     episode_number = item.index or 0
+                rec = preferred_codec if preferred_codec in SUPPORTED_CODECS else "hevc"
+                if preferred_codec == "auto":
+                    rec = "hevc"
                 info = VideoInfo(
                     rating_key=str(item.ratingKey),
                     title=item.title,
@@ -206,7 +234,7 @@ class PlexClient:
                     height=media.height or 0,
                     bitrate=media.bitrate or 0,
                     video_profile=media.videoProfile or "",
-                    recommended_codec=preferred_codec if preferred_codec != "auto" else "hevc",
+                    recommended_codec=rec,
                     part_id=str(part.id) if hasattr(part, "id") else "",
                     media_id=str(media.id) if hasattr(media, "id") else "",
                 )
