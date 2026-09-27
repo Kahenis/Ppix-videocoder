@@ -129,90 +129,139 @@ class Encoder:
             return job
 
         Path(job.output_path).parent.mkdir(parents=True, exist_ok=True)
-        cmd = self.build_command(job)
-        log(f"  cmd: {' '.join(cmd)}")
 
-        ffmpeg_tail: List[str] = []
+        attempts = [job.hardware]
+        if job.hardware and job.hardware != "none":
+            attempts.append("none")
+
+        last_error = ""
         try:
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore
-
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                encoding="utf-8",
-                errors="replace",
-                bufsize=1,
-                creationflags=creationflags,
-            )
-            job.process = proc
-
-            duration_s = 0.0
-            for line in proc.stdout:
+            for attempt_hw in attempts:
                 if self._stop_requested:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
                     job.status = "cancelled"
                     job.message = "Annulé par l'utilisateur"
-                    log(job.message, level="WARN")
                     break
 
-                line = line.strip()
-                if line:
-                    ffmpeg_tail.append(line)
-                    if len(ffmpeg_tail) > 80:
-                        ffmpeg_tail = ffmpeg_tail[-80:]
+                original_hw = job.hardware
+                job.hardware = attempt_hw
+                cmd = self.build_command(job)
+                job.hardware = original_hw
+                log(f"  cmd (hw={attempt_hw}): {' '.join(cmd)}")
 
-                if line.startswith("out_time_ms="):
-                    try:
-                        out_ms = int(line.split("=")[1]) / 1_000_000
-                        if duration_s > 0:
-                            pct = min(99.0, (out_ms / duration_s) * 100)
-                            job.progress = pct
-                            if progress_cb:
-                                progress_cb(pct, f"{pct:.1f}%")
-                    except ValueError:
-                        pass
-                elif "Duration:" in line:
-                    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", line)
-                    if m:
-                        h, m_, s = m.groups()
-                        duration_s = int(h) * 3600 + int(m_) * 60 + float(s)
+                creationflags = 0
+                if sys.platform == "win32":
+                    creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore
 
-            ret = proc.wait()
-            if job.status != "cancelled":
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    creationflags=creationflags,
+                )
+                job.process = proc
+
+                ffmpeg_tail: List[str] = []
+                duration_s = 0.0
+                for line in proc.stdout:
+                    if self._stop_requested:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        job.status = "cancelled"
+                        job.message = "Annulé par l'utilisateur"
+                        log(job.message, level="WARN")
+                        break
+
+                    line = line.strip()
+                    if line:
+                        ffmpeg_tail.append(line)
+                        if len(ffmpeg_tail) > 80:
+                            ffmpeg_tail = ffmpeg_tail[-80:]
+
+                    if line.startswith("out_time_ms="):
+                        try:
+                            out_ms = int(line.split("=")[1]) / 1_000_000
+                            if duration_s > 0:
+                                pct = min(99.0, (out_ms / duration_s) * 100)
+                                job.progress = pct
+                                if progress_cb:
+                                    progress_cb(pct, f"{pct:.1f}%")
+                        except ValueError:
+                            pass
+                    elif "Duration:" in line:
+                        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", line)
+                        if m:
+                            h, m_, s = m.groups()
+                            duration_s = int(h) * 3600 + int(m_) * 60 + float(s)
+
+                if job.status == "cancelled":
+                    break
+
+                ret = proc.wait()
+                job.process = None
+
                 if ret == 0 and os.path.exists(job.output_path):
                     job.progress = 100.0
                     job.status = "done"
                     job.output_size = os.path.getsize(job.output_path)
-                    job.message = "Terminé"
-                    log(f"Encode OK ({job.output_size} bytes)")
-                else:
+                    if attempt_hw != original_hw and original_hw != "none":
+                        job.message = f"Terminé (CPU — {original_hw} indisponible)"
+                        log(f"Encode OK via fallback CPU ({job.output_size} bytes)")
+                    else:
+                        job.message = "Terminé"
+                        log(f"Encode OK ({job.output_size} bytes)")
+                    break
+
+                tail = "\n".join(ffmpeg_tail[-30:])
+                last_error = f"FFmpeg exit code {ret}"
+                log(f"Encode FAIL exit={ret} hw={attempt_hw}", level="ERROR")
+                log(f"FFmpeg last lines:\n{tail}", level="ERROR")
+                low = tail.lower()
+                hw_fail = (
+                    "nvenc" in low or "cuda" in low or "qsv" in low or "amf" in low
+                    or "driver does not support" in low
+                    or "does not support the required" in low
+                    or "function not implemented" in low
+                    or "cannot load" in low
+                )
+                if attempt_hw != "none" and hw_fail and "none" in attempts:
+                    log("Bascule automatique vers encodage CPU (libx265/libx264)…", level="WARN")
+                    try:
+                        if os.path.exists(job.output_path) and os.path.getsize(job.output_path) == 0:
+                            os.remove(job.output_path)
+                    except Exception:
+                        pass
+                    continue
+
+                job.status = "error"
+                job.message = last_error
+                if "no such file" in low or "cannot find" in low:
+                    job.message += " — fichier introuvable"
+                elif "permission" in low:
+                    job.message += " — permission refusee"
+                elif "driver does not support" in low or "nvenc api" in low:
+                    job.message = (
+                        "Pilote NVIDIA trop ancien pour ce FFmpeg. "
+                        "Passez l'acceleration sur « processeur seul » "
+                        "ou mettez a jour les drivers NVIDIA."
+                    )
+                elif "invalid" in low and "encoder" in low:
+                    job.message += " — encodeur invalide (hardware ?)"
+                break
+            else:
+                if job.status not in ("done", "cancelled"):
                     job.status = "error"
-                    tail = "\n".join(ffmpeg_tail[-25:])
-                    job.message = f"FFmpeg exit code {ret}"
-                    log(f"Encode FAIL exit={ret}", level="ERROR")
-                    log(f"FFmpeg last lines:\n{tail}", level="ERROR")
-                    low = tail.lower()
-                    if "no such file" in low or "cannot find" in low:
-                        job.message += " — fichier introuvable"
-                    elif "permission" in low:
-                        job.message += " — permission refusee"
-                    elif "invalid" in low and "encoder" in low:
-                        job.message += " — encodeur invalide (hardware ?)"
-                    elif "nvenc" in low or "cuda" in low:
-                        job.message += " — probleme NVIDIA/NVENC"
+                    job.message = last_error or "Echec encodage"
         except Exception as e:
             job.status = "error"
             job.message = str(e)
             log(f"Encode exception: {e}", level="ERROR")
-            log("\n".join(ffmpeg_tail[-20:]), level="ERROR")
         finally:
             job.end_time = time.time()
             job.process = None
