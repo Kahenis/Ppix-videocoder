@@ -4,6 +4,7 @@
 [![Latest release](https://img.shields.io/github/v/release/Kahenis/Ppix-videocoder)](https://github.com/Kahenis/Ppix-videocoder/releases/latest)
 
 Application **Windows** autonome pour optimiser les codecs vidéo de vos bibliothèques **Plex**.
+Les vieux codecs (AVI, MPEG-2, WMV…) obligent souvent Plex à transcoder en direct, ce qui charge le NAS et coupe le Direct Play. Ppix-Videocoder scanne vos bibliothèques, détecte les fichiers non optimaux, et les réencode en H.265 ou H.264 avec FFmpeg inclus — file d’attente, progression, remplacement optionnel de l’original, le tout en profitant de l’accélération matérielle de votre PC (CG Nvidia, CG AMD, CPU)
 
 > **Version publiable : 1.5.10**  
 > Téléchargement : [Releases](https://github.com/Kahenis/Ppix-videocoder/releases/latest)
