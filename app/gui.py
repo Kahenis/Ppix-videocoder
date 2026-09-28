@@ -22,6 +22,10 @@ from .encoder import Encoder, EncodeJob
 from .logger import log, read_log, clear_log, open_log_folder, get_log_path
 from .about_dialog import show_about
 from .results_list import ResultsList
+from .v154_features import (
+    ask_network_root_before_scan, on_result_select,
+    queue_add_video, queue_remove_video, make_job_for_video,
+)
 
 ACCENT = "#E5A00D"
 BG = "#161616"
@@ -390,6 +394,12 @@ class App(ctk.CTk):
         if self.scan_thread and self.scan_thread.is_alive():
             self._log("Scan deja en cours.")
             return
+        if not (self.settings.get("network_root") or "").strip():
+            ask_network_root_before_scan(self)
+            return
+        self._do_start_scan()
+
+    def _do_start_scan(self):
         self.scan_progress.set(0)
         self.scan_status.configure(text="Scan en cours…")
         self._log("Scan des bibliotheques…")
@@ -438,6 +448,7 @@ class App(ctk.CTk):
             self.videos, self.selected, self.codec_choice,
             on_status=lambda s: self.scan_status.configure(text=s) if hasattr(self, "scan_status") else None,
             on_folder=self._open_folder, on_plex=self._open_in_plex,
+            on_select=lambda v, c: on_result_select(self, v, c),
         )
 
     def _select_all(self):
@@ -611,8 +622,12 @@ class App(ctk.CTk):
                         if vinfo and self.settings.get("refresh_plex_after", True):
                             try:
                                 self.plex.refresh_item(vinfo.rating_key)
-                            except Exception:
-                                pass
+                                lib = getattr(vinfo, "library", "") or ""
+                                if lib:
+                                    self.plex.refresh_library(lib)
+                                self._ui(self._log, "Plex: analyse forcee (mise a jour codec)")
+                            except Exception as ex:
+                                self._ui(self._log, f"Plex refresh: {ex}")
                         self._ui(self._log, f"Remplace: {Path(job.video_path).name}")
                     self.history.append({"time": datetime.now().isoformat(), "file": job.video_path, "codec": job.codec, "status": job.status, "original_size": job.original_size, "output_size": job.output_size, "duration_s": job.end_time - job.start_time})
                     save_history(self.history)

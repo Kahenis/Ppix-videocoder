@@ -67,6 +67,7 @@ class ResultsList:
         self._on_folder = None
         self._on_plex = None
         self._on_status: Optional[Callable[[str], None]] = None
+        self._on_select: Optional[Callable[[VideoInfo, bool], None]] = None
         self._videos: List[VideoInfo] = []
 
     def winfo_exists(self) -> bool:
@@ -91,6 +92,7 @@ class ResultsList:
         on_status: Callable[[str], None],
         on_folder,
         on_plex,
+        on_select: Optional[Callable[[VideoInfo, bool], None]] = None,
     ) -> None:
         """Prepare data and show page 0. Heavy sorting is deferred one tick
         so the status message can paint first."""
@@ -101,6 +103,7 @@ class ResultsList:
         self._on_folder = on_folder
         self._on_plex = on_plex
         self._on_status = on_status
+        self._on_select = on_select
         self._videos = videos
         self._page = 0
         self.clear()
@@ -257,8 +260,14 @@ class ResultsList:
         var = ctk.BooleanVar(master=self.app, value=bool(selected.get(key, False)))
         self.row_vars[key] = var
 
-        def on_toggle(k=key, bv=var):
-            selected[k] = bool(bv.get())
+        def on_toggle(k=key, bv=var, video=v):
+            checked = bool(bv.get())
+            selected[k] = checked
+            if self._on_select:
+                try:
+                    self._on_select(video, checked)
+                except Exception:
+                    pass
 
         ctk.CTkCheckBox(
             row, text="", variable=var, command=on_toggle, width=28,
@@ -314,7 +323,13 @@ class ResultsList:
         """Select / deselect the entire result set (all pages)."""
         for v in videos:
             k = f"{v.rating_key}|{v.file_path}"
+            was = bool(selected.get(k, False))
             selected[k] = value
+            if was != value and self._on_select:
+                try:
+                    self._on_select(v, value)
+                except Exception:
+                    pass
         # Update visible checkboxes only
         for k, var in self.row_vars.items():
             try:

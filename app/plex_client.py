@@ -3,21 +3,23 @@ from __future__ import annotations
 
 import time
 import webbrowser
-from dataclasses import dataclass
-from typing import Optional, List
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
 
 from plexapi.myplex import MyPlexPinLogin, MyPlexAccount
 from plexapi.server import PlexServer
+from plexapi.exceptions import Unauthorized, NotFound
 
 from .config import CLIENT_IDENTIFIER, NON_OPTIMAL_CODECS, SUPPORTED_CODECS, is_codec_acceptable
 
 
 @dataclass
 class VideoInfo:
+    """Represents a video file that may need re-encoding."""
     rating_key: str
     title: str
     library: str
-    library_type: str
+    library_type: str          # movie | show
     series_title: str = ""
     season_title: str = ""
     season_number: int = 0
@@ -68,27 +70,36 @@ class PlexClient:
         self.server_url: str = ""
         self.server_name: str = ""
 
+    # ------------------------------------------------------------------
+    # Authentication (PIN)
+    # ------------------------------------------------------------------
     def start_pin_login(self) -> str:
+        """Start PIN login and return the 4-character PIN."""
         headers = {
             "X-Plex-Client-Identifier": CLIENT_IDENTIFIER,
             "X-Plex-Product": "Ppix-Videocoder",
-            "X-Plex-Version": "1.1.0",
+            "X-Plex-Version": "1.0.0",
             "X-Plex-Device": "Windows",
             "X-Plex-Platform": "Windows",
         }
         self.pin_login = MyPlexPinLogin(headers=headers)
+        # Trigger generation
         _ = self.pin_login.pin
         return self.pin_login.pin
 
     def open_link_and_copy(self, pin: str) -> None:
-        webbrowser.open("https://plex.tv/link")
+        """Open plex.tv/link and try to put the PIN in clipboard."""
+        url = "https://plex.tv/link"
+        webbrowser.open(url)
         try:
             import pyperclip
             pyperclip.copy(pin)
         except Exception:
+            # fallback: just open the page
             pass
 
     def wait_for_pin(self, timeout: int = 300, poll: float = 1.5) -> bool:
+        """Poll until the PIN is claimed (auto, no user click). Returns True on success."""
         if not self.pin_login:
             return False
         deadline = time.time() + timeout
@@ -106,15 +117,18 @@ class PlexClient:
         return False
 
     def connect_with_token(self, token: str, server_name: str = "") -> bool:
+        """Connect using an existing token (main account only)."""
         try:
             self.account = MyPlexAccount(token=token)
             self.token = token
             resources = self.account.resources()
+            # Prefer owned servers (main account)
             owned = [r for r in resources if r.owned and r.provides == "server"]
             if not owned:
                 owned = [r for r in resources if r.provides == "server"]
             if not owned:
                 return False
+
             target = None
             if server_name:
                 for r in owned:
@@ -123,6 +137,7 @@ class PlexClient:
                         break
             if target is None:
                 target = owned[0]
+
             self.server = target.connect()
             self.server_name = target.name
             self.server_url = self.server._baseurl
@@ -136,15 +151,27 @@ class PlexClient:
             return []
         return [r.name for r in self.account.resources() if r.owned and r.provides == "server"]
 
-    def scan_libraries(self, preferred_codec: str = "hevc", min_keep_codec: str = "h264", progress_cb=None) -> List[VideoInfo]:
+    # ------------------------------------------------------------------
+    # Scanning
+    # ------------------------------------------------------------------
+    def scan_libraries(
+        self,
+        preferred_codec: str = "hevc",
+        min_keep_codec: str = "h264",
+        progress_cb=None,
+    ) -> List[VideoInfo]:
+        """Scan libraries; progress_cb(done, total, message) optional."""
         if not self.server:
             return []
+
         results: List[VideoInfo] = []
         sections = [s for s in self.server.library.sections() if s.type in ("movie", "show")]
         if not sections:
             if progress_cb:
                 progress_cb(1, 1, "Aucune bibliothèque")
             return results
+
+        # Première passe : compter les éléments (films + séries)
         counts = []
         for section in sections:
             try:
@@ -152,37 +179,51 @@ class PlexClient:
             except Exception:
                 items = []
             counts.append((section, items))
+
         total = sum(len(items) for _, items in counts) or 1
         done = 0
         if progress_cb:
             progress_cb(0, total, "Démarrage du scan…")
+
         for section, items in counts:
             for item in items:
                 try:
-                    self._extract_videos(item, section, preferred_codec, min_keep_codec, results)
+                    self._extract_videos(
+                        item, section, preferred_codec, min_keep_codec, results,
+                    )
                 except Exception:
                     pass
                 done += 1
                 if progress_cb and (done % 3 == 0 or done >= total):
                     progress_cb(done, total, f"{section.title} ({done}/{total})")
+
         if progress_cb:
             progress_cb(total, total, f"Terminé — {len(results)} fichier(s)")
         return results
 
-    def _extract_videos(self, item, section, preferred_codec: str, min_keep_codec: str, results: List[VideoInfo]):
+    def _extract_videos(self, item, section, preferred_codec: str, min_keep_codec: str,
+                        results: List[VideoInfo]):
         if section.type == "show":
             for episode in item.episodes():
-                self._process_media_item(episode, section, preferred_codec, min_keep_codec, results, series_title=item.title)
+                self._process_media_item(
+                    episode, section, preferred_codec, min_keep_codec, results,
+                    series_title=item.title,
+                )
         else:
             self._process_media_item(item, section, preferred_codec, min_keep_codec, results)
 
-    def _process_media_item(self, item, section, preferred_codec: str, min_keep_codec: str, results: List[VideoInfo], series_title: str = ""):
+    def _process_media_item(self, item, section, preferred_codec: str, min_keep_codec: str,
+                            results: List[VideoInfo], series_title: str = ""):
         if not hasattr(item, "media") or not item.media:
             return
+
         for media in item.media:
             video_codec = (media.videoCodec or "").lower()
+
+            # Filtre "codec minimum acceptable" : ne pas lister si déjà assez bon
             if is_codec_acceptable(video_codec, min_keep_codec):
                 continue
+
             for part in media.parts:
                 file_path = part.file or ""
                 if not file_path:
@@ -199,14 +240,24 @@ class PlexClient:
                 if preferred_codec == "auto":
                     rec = "hevc"
                 info = VideoInfo(
-                    rating_key=str(item.ratingKey), title=item.title, library=section.title,
+                    rating_key=str(item.ratingKey),
+                    title=item.title,
+                    library=section.title,
                     library_type=section.type,
                     series_title=series_title or getattr(item, "grandparentTitle", ""),
-                    season_title=season_title, season_number=season_number, episode_number=episode_number,
-                    file_path=file_path, file_size=part.size or 0, duration_ms=media.duration or 0,
-                    video_codec=video_codec, audio_codec=(media.audioCodec or "").lower(),
-                    container=(media.container or "").lower(), width=media.width or 0, height=media.height or 0,
-                    bitrate=media.bitrate or 0, video_profile=media.videoProfile or "",
+                    season_title=season_title,
+                    season_number=season_number,
+                    episode_number=episode_number,
+                    file_path=file_path,
+                    file_size=part.size or 0,
+                    duration_ms=media.duration or 0,
+                    video_codec=video_codec,
+                    audio_codec=(media.audioCodec or "").lower(),
+                    container=(media.container or "").lower(),
+                    width=media.width or 0,
+                    height=media.height or 0,
+                    bitrate=media.bitrate or 0,
+                    video_profile=media.videoProfile or "",
                     recommended_codec=rec,
                     part_id=str(part.id) if hasattr(part, "id") else "",
                     media_id=str(media.id) if hasattr(media, "id") else "",
@@ -214,9 +265,15 @@ class PlexClient:
                 results.append(info)
 
     def refresh_item(self, rating_key: str) -> None:
+        """Force Plex to re-analyze the media file so codec/size update after replace.
+
+        item.refresh() alone only refreshes agent metadata and often keeps the
+        old videoCodec in the database. analyze + force refresh fixes that.
+        """
         if not self.server or not rating_key:
             return
         rk = str(rating_key)
+        # 1) Analyze media streams (re-probe the file on disk)
         try:
             self.server.query(f"/library/metadata/{rk}/analyze", method=self.server._session.put)
         except Exception:
@@ -226,14 +283,20 @@ class PlexClient:
                     item.analyze()
             except Exception:
                 pass
+        # 2) Force metadata refresh
         try:
-            self.server.query(f"/library/metadata/{rk}/refresh", method=self.server._session.put, params={"force": 1})
+            self.server.query(
+                f"/library/metadata/{rk}/refresh",
+                method=self.server._session.put,
+                params={"force": 1},
+            )
         except Exception:
             try:
                 item = self.server.fetchItem(int(rk))
                 item.refresh()
             except Exception:
                 pass
+        # 3) Reload so subsequent API reads see new codec
         try:
             item = self.server.fetchItem(int(rk))
             item.reload()
@@ -249,21 +312,42 @@ class PlexClient:
         except Exception:
             pass
 
-    def detect_path_mapping(self) -> dict:
+    def detect_path_mapping(self) -> Dict[str, str]:
+        """Try to deduce plex_prefix + network_root from the connected server.
+
+        Returns dict with keys: plex_prefix, network_root, local_ip, message.
+        network_root may be empty if the share name cannot be guessed reliably.
+        """
         out = {"plex_prefix": "", "network_root": "", "local_ip": "", "message": ""}
         if not self.server:
             out["message"] = "Serveur non connecté"
             return out
+
+        # --- Local IP ---
         local_ip = ""
         try:
             base = (self.server_url or getattr(self.server, "_baseurl", "") or "").rstrip("/")
+            # http://192.168.1.10:32400
             if "://" in base:
                 host = base.split("://", 1)[1].split("/")[0].split(":")[0]
                 if host and host not in ("127.0.0.1", "localhost"):
                     local_ip = host
         except Exception:
             pass
+        if not local_ip:
+            try:
+                # Fallback: connection list on the resource
+                for c in getattr(self.server, "connections", []) or []:
+                    addr = getattr(c, "address", "") or ""
+                    local = getattr(c, "local", True)
+                    if local and addr and addr not in ("127.0.0.1", "localhost"):
+                        local_ip = addr
+                        break
+            except Exception:
+                pass
         out["local_ip"] = local_ip
+
+        # --- Library locations (paths as seen by the Plex server) ---
         locations: List[str] = []
         try:
             for section in self.server.library.sections():
@@ -275,9 +359,12 @@ class PlexClient:
         except Exception as e:
             out["message"] = f"Impossible de lire les bibliothèques: {e}"
             return out
+
         if not locations:
             out["message"] = "Aucun chemin de bibliothèque trouvé"
             return out
+
+        # Common path prefix (posix style from server)
         norm = [p.replace("\\", "/").rstrip("/") for p in locations]
         prefix = norm[0]
         for p in norm[1:]:
@@ -286,12 +373,18 @@ class PlexClient:
             if not prefix:
                 break
         out["plex_prefix"] = prefix
+
+        # Guess Windows UNC: \\IP\first_segment
+        # e.g. /volume1/media → \\192.168.1.10\volume1  (Synology often shares the volume)
+        # or /share/Films → \\IP\share
         network_root = ""
         if local_ip and prefix:
             parts = [x for x in prefix.split("/") if x]
             if parts:
-                network_root = f"\\\\{local_ip}\\{parts[0]}"
+                share = parts[0]
+                network_root = f"\\\\{local_ip}\\{share}"
         out["network_root"] = network_root
+
         if network_root and prefix:
             out["message"] = f"Détecté : {network_root}  (préfixe Plex : {prefix})"
         elif prefix:
