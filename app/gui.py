@@ -625,67 +625,114 @@ class App(ctk.CTk):
         self.queue_list.pack(fill="both", expand=True)
         self._render_queue()
 
+    def _queue_job_id(self, job) -> int:
+        return id(job)
+
     def _render_queue(self):
+        """Reconstruction complete de la liste (ajout / suppression / changement de structure)."""
         if not hasattr(self, "queue_list") or not self.queue_list.winfo_exists():
             return
         for w in self.queue_list.winfo_children():
             w.destroy()
+        self._queue_widgets = {}
         for i, job in enumerate(self.queue):
-            row = ctk.CTkFrame(self.queue_list, fg_color=CARD, corner_radius=6)
-            row.pack(fill="x", padx=8, pady=3)
-            ctk.CTkLabel(
-                row, text=f"{i+1}. {Path(job.video_path).name[:42]}",
-                width=260, anchor="w", text_color=TEXT,
-            ).pack(side="left", padx=6, pady=6)
+            self._build_queue_row(i, job)
 
-            # Ancien codec (s'estompe avec la progression) → jauge → nouveau codec
-            vinfo = getattr(job, "_video_info", None)
-            old_codec = (getattr(vinfo, "video_codec", "") or getattr(job, "source_container", "") or "?").lower()
-            old_cont = (getattr(vinfo, "container", "") or getattr(job, "source_container", "") or "").lower()
-            if old_cont:
-                old_label = f"{old_codec}/{old_cont}"
-            else:
-                old_label = old_codec
-            new_codec = (job.codec or "hevc").lower()
-            # Affichage type hevc/h265/mkv
-            alias = {"hevc": "h265", "h264": "avc"}.get(new_codec, new_codec)
-            new_cont = (job.container or "mp4").lower()
-            new_label = f"{new_codec}/{alias}/{new_cont}"
+    def _build_queue_row(self, i: int, job) -> None:
+        row = ctk.CTkFrame(self.queue_list, fg_color=CARD, corner_radius=6)
+        row.pack(fill="x", padx=8, pady=3)
+        ctk.CTkLabel(
+            row, text=f"{i+1}. {Path(job.video_path).name[:42]}",
+            width=260, anchor="w", text_color=TEXT,
+        ).pack(side="left", padx=6, pady=6)
 
-            frac = max(0.0, min(1.0, (job.progress or 0) / 100.0))
-            # Fade: from bright muted → near background as progress rises
-            # 0% → #C0C0C0, 100% → #2A2A2A (quasi invisible sur fond sombre)
-            if job.status == "done":
-                old_color = "#2A2A2A"
-                show_old = False
-            else:
-                r = int(192 - 150 * frac)
-                g = int(192 - 150 * frac)
-                b = int(192 - 150 * frac)
-                old_color = f"#{r:02x}{g:02x}{b:02x}"
-                show_old = frac < 0.98
+        vinfo = getattr(job, "_video_info", None)
+        old_codec = (getattr(vinfo, "video_codec", "") or getattr(job, "source_container", "") or "?").lower()
+        old_cont = (getattr(vinfo, "container", "") or getattr(job, "source_container", "") or "").lower()
+        old_label = f"{old_codec}/{old_cont}" if old_cont else old_codec
+        new_codec = (job.codec or "hevc").lower()
+        alias = {"hevc": "h265", "h264": "avc"}.get(new_codec, new_codec)
+        new_cont = (job.container or "mp4").lower()
+        new_label = f"{new_codec}/{alias}/{new_cont}"
 
-            if show_old:
-                ctk.CTkLabel(row, text=old_label, width=90, anchor="e", text_color=old_color).pack(
-                    side="left", padx=(4, 2)
-                )
-            else:
-                ctk.CTkLabel(row, text="", width=90).pack(side="left", padx=(4, 2))
+        frac = max(0.0, min(1.0, (job.progress or 0) / 100.0))
+        if job.status == "done":
+            old_color = "#2A2A2A"
+            show_old = False
+        else:
+            r = g = b = int(192 - 150 * frac)
+            old_color = f"#{r:02x}{g:02x}{b:02x}"
+            show_old = frac < 0.98
 
-            prog = ctk.CTkProgressBar(row, width=160, progress_color=ACCENT)
-            prog.set(frac)
-            prog.pack(side="left", padx=6)
+        lbl_old = ctk.CTkLabel(
+            row, text=old_label if show_old else "", width=90, anchor="e", text_color=old_color,
+        )
+        lbl_old.pack(side="left", padx=(4, 2))
 
-            new_color = ACCENT if job.status in ("running", "done", "pending") else MUTED
-            ctk.CTkLabel(row, text=new_label, width=110, anchor="w", text_color=new_color).pack(
-                side="left", padx=(2, 4)
+        prog = ctk.CTkProgressBar(row, width=160, progress_color=ACCENT)
+        prog.set(frac)
+        prog.pack(side="left", padx=6)
+
+        new_color = ACCENT if job.status in ("running", "done", "pending") else MUTED
+        ctk.CTkLabel(row, text=new_label, width=110, anchor="w", text_color=new_color).pack(
+            side="left", padx=(2, 4)
+        )
+
+        colors = {"done": OK, "error": "#f87171", "running": "#60a5fa", "cancelled": WARN}
+        lbl_status = ctk.CTkLabel(
+            row, text=f"{job.progress:.0f}% · {job.status}",
+            text_color=colors.get(job.status, MUTED), width=100,
+        )
+        lbl_status.pack(side="left", padx=4)
+
+        if not hasattr(self, "_queue_widgets"):
+            self._queue_widgets = {}
+        self._queue_widgets[self._queue_job_id(job)] = {
+            "row": row,
+            "prog": prog,
+            "lbl_old": lbl_old,
+            "lbl_status": lbl_status,
+            "old_label": old_label,
+            "status": job.status,
+        }
+
+    def _update_queue_job(self, job) -> None:
+        """Met a jour uniquement la ligne du job (pas de rebuild → pas de clignotement)."""
+        if not hasattr(self, "queue_list") or not self.queue_list.winfo_exists():
+            return
+        widgets = getattr(self, "_queue_widgets", {}).get(self._queue_job_id(job))
+        if not widgets:
+            # Ligne absente (ex. premier affichage) → rebuild minimal
+            self._render_queue()
+            return
+        # Changement de statut (pending→running→done) : rebuild complet pour la ligne
+        if widgets.get("status") != job.status and job.status in ("done", "error", "cancelled"):
+            self._render_queue()
+            return
+        widgets["status"] = job.status
+        frac = max(0.0, min(1.0, (job.progress or 0) / 100.0))
+        try:
+            widgets["prog"].set(frac)
+        except Exception:
+            pass
+        r = g = b = int(192 - 150 * frac)
+        old_color = f"#{r:02x}{g:02x}{b:02x}"
+        show_old = job.status != "done" and frac < 0.98
+        try:
+            widgets["lbl_old"].configure(
+                text=widgets["old_label"] if show_old else "",
+                text_color=old_color if show_old else "#2A2A2A",
             )
-
-            colors = {"done": OK, "error": "#f87171", "running": "#60a5fa", "cancelled": WARN}
-            ctk.CTkLabel(
-                row, text=f"{job.progress:.0f}% · {job.status}",
-                text_color=colors.get(job.status, MUTED), width=100,
-            ).pack(side="left", padx=4)
+        except Exception:
+            pass
+        colors = {"done": OK, "error": "#f87171", "running": "#60a5fa", "cancelled": WARN}
+        try:
+            widgets["lbl_status"].configure(
+                text=f"{job.progress:.0f}% · {job.status}",
+                text_color=colors.get(job.status, MUTED),
+            )
+        except Exception:
+            pass
 
     def _start_queue(self):
         if self.queue_running:
@@ -703,7 +750,11 @@ class App(ctk.CTk):
                     continue
                 def cb(p, msg, j=job):
                     j.progress = p
-                    self._ui(self._render_queue)
+                    # Mise a jour partielle uniquement (evite le clignotement de toute la liste)
+                    last = getattr(j, "_last_ui_pct", -1)
+                    if p - last >= 0.4 or p >= 99.5 or p <= 0.1:
+                        j._last_ui_pct = p  # type: ignore
+                        self._ui(self._update_queue_job, j)
                 self.encoder.encode(job, progress_cb=cb)
                 if job.status == "error":
                     self._ui(self._log, f"ERREUR encodage: {job.message}")
