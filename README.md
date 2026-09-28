@@ -1,4 +1,4 @@
-# Ppix-Videocoder
+# Ppix-Videocoder (Version pré-distribuable finale)
 
 [![Build Windows EXE](https://github.com/Kahenis/Ppix-videocoder/actions/workflows/build-windows.yml/badge.svg)](https://github.com/Kahenis/Ppix-videocoder/actions/workflows/build-windows.yml)
 [![Latest release](https://img.shields.io/github/v/release/Kahenis/Ppix-videocoder)](https://github.com/Kahenis/Ppix-videocoder/releases/latest)
