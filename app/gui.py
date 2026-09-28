@@ -782,7 +782,7 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(scroll, text="Rafraichir Plex apres remplacement", variable=refresh, fg_color=ACCENT).pack(anchor="w", pady=8)
         ctk.CTkLabel(scroll, text="Acces fichiers (NAS → Windows)", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(16, 4))
         ctk.CTkLabel(scroll, text="Racine reseau Windows", text_color=MUTED).pack(anchor="w", pady=(10, 2))
-        e_root = ctk.CTkEntry(scroll, width=480, placeholder_text="\\\\192.168.1.10\\media", fg_color=CARD)
+        e_root = ctk.CTkEntry(scroll, width=480, placeholder_text="\\\\192.168.1.10\\Media", fg_color=CARD)
         e_root.pack(anchor="w")
         if self.settings.get("network_root"):
             e_root.insert(0, self.settings["network_root"])
@@ -798,7 +798,7 @@ class App(ctk.CTk):
                 return
             e_pref.delete(0, "end")
             e_pref.insert(0, pref)
-        ctk.CTkButton(scroll, text="Dedaire le prefixe (dernier scan)", width=280, fg_color="#333", command=do_auto_prefix).pack(anchor="w", pady=8)
+        ctk.CTkButton(scroll, text="Déduire le préfixe (dernier scan)", width=280, fg_color="#333", command=do_auto_prefix).pack(anchor="w", pady=8)
         ctk.CTkLabel(scroll, text="Journal de diagnostic", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(18, 4))
         log_row = ctk.CTkFrame(scroll, fg_color=BG)
         log_row.pack(anchor="w", pady=8)

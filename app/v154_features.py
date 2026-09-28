@@ -36,7 +36,7 @@ def ask_network_root_before_scan(app) -> None:
         box,
         text=(
             "Vous n'avez pas saisi de chemin réseau dans les paramètres.\n"
-            "Exemple attendu : \\\\Nazgul\\Pour-tous  ou  \\\\192.168.1.240\\Pour-tous"
+            "Exemple attendu : \\\\MON-NAS\\Videos  ou  \\\\192.168.1.10\\Media"
         ),
         wraplength=520,
         justify="left",
@@ -91,22 +91,19 @@ def ask_network_root_before_scan(app) -> None:
                 root = (info.get("network_root") or "").strip()
                 pref = (info.get("plex_prefix") or "").strip()
                 msg = info.get("message") or ""
+                cands = info.get("candidates") or []
                 if root:
                     entry.delete(0, "end")
                     entry.insert(0, root)
-                    status.configure(
-                        text=msg + "\nCorrigez si besoin puis cliquez « Utiliser ce chemin ».",
-                        text_color=TEXT,
-                    )
-                    # store prefix for accept
-                    box._detected_prefix = pref  # type: ignore
-                else:
-                    status.configure(
-                        text=(msg or "Récupération impossible.")
-                        + "\nSaisissez le chemin manuellement ou ouvrez les paramètres.",
-                        text_color=WARN,
-                    )
-                    box._detected_prefix = ""  # type: ignore
+                elif cands:
+                    entry.delete(0, "end")
+                    entry.insert(0, cands[0])
+                status.configure(
+                    text=(msg or "Saisie manuelle requise.")
+                    + ("\nCorrigez si besoin puis cliquez « Utiliser ce chemin »." if (root or cands) else ""),
+                    text_color=TEXT if (root or cands) else WARN,
+                )
+                box._detected_prefix = pref  # type: ignore
 
             app._ui(apply)
 

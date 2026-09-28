@@ -312,6 +312,7 @@ class PlexClient:
         except Exception:
             pass
 
+
     @staticmethod
     def _is_usable_lan_host(host: str) -> bool:
         """Reject loopback, plex.direct relay hostnames, keep real LAN IP/host."""
@@ -322,38 +323,60 @@ class PlexClient:
             return False
         if "plex.direct" in h:
             return False
-        # IPv4
         parts = h.split(".")
         if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
             return True
-        # Short LAN hostname (no dots) e.g. Nazgul
         if "." not in h and h.replace("-", "").isalnum():
             return True
         return False
 
-    def detect_path_mapping(self) -> Dict[str, str]:
-        """Try to deduce plex_prefix + network_root from the connected server.
+    @staticmethod
+    def _common_prefix(paths: List[str]) -> str:
+        if not paths:
+            return ""
+        norm = [p.replace("\\", "/").rstrip("/") for p in paths if p]
+        if not norm:
+            return ""
+        prefix = norm[0]
+        for p in norm[1:]:
+            while prefix and not p.startswith(prefix):
+                prefix = prefix.rsplit("/", 1)[0] if "/" in prefix else ""
+            if not prefix:
+                break
+        return prefix
 
-        Returns dict with keys: plex_prefix, network_root, local_ip, message, candidates.
-        Prefers real LAN IPv4 over plex.direct relay hostnames.
+    def detect_path_mapping(self) -> Dict[str, Any]:
+        """Deduce plex_prefix + Windows network_root from the Plex API.
+
+        The API only exposes paths *as seen by the Plex Media Server*
+        (section.locations + media part.file). There is no official endpoint
+        for the client PC's UNC mapping — we reconstruct it from:
+          1. Library Location paths (GET /library/sections → Location@path)
+          2. Server LAN IP (connections, not *.plex.direct)
+          3. If locations are already UNC/drive letters, use them directly
+          4. Otherwise build candidate UNC roots and probe which exist (Windows)
+
+        Returns keys: plex_prefix, network_root, local_ip, locations, candidates, message.
         """
-        out: Dict[str, str] = {
+        out: Dict[str, Any] = {
             "plex_prefix": "",
             "network_root": "",
             "local_ip": "",
+            "locations": [],
+            "candidates": [],
             "message": "",
         }
         if not self.server:
             out["message"] = "Serveur non connecté"
             return out
 
-        # --- Collect candidate hosts (prefer real IPv4) ---
-        candidates: List[str] = []
+        # --- 1) LAN host (prefer real IPv4, never plex.direct) ---
+        hosts: List[str] = []
 
         def add_host(h: str) -> None:
             h = (h or "").strip()
-            if h and h not in candidates and self._is_usable_lan_host(h):
-                candidates.append(h)
+            if h and h not in hosts and self._is_usable_lan_host(h):
+                hosts.append(h)
 
         try:
             base = (self.server_url or getattr(self.server, "_baseurl", "") or "").rstrip("/")
@@ -361,93 +384,135 @@ class PlexClient:
                 add_host(base.split("://", 1)[1].split("/")[0].split(":")[0])
         except Exception:
             pass
-
-        # plexapi server connections (local LAN first)
         try:
-            conns = list(getattr(self.server, "connections", []) or [])
-            # Prefer local=True
             for prefer_local in (True, False):
-                for c in conns:
+                for c in list(getattr(self.server, "connections", []) or []):
                     local = getattr(c, "local", None)
                     if prefer_local and local is False:
                         continue
                     if not prefer_local and local is True:
                         continue
                     add_host(getattr(c, "address", "") or "")
-                    # uri may be http://192.168.x.x:32400
                     uri = getattr(c, "uri", "") or ""
                     if "://" in uri:
                         add_host(uri.split("://", 1)[1].split("/")[0].split(":")[0])
         except Exception:
             pass
-
-        # Prefer pure IPv4 over hostnames
-        ipv4 = [h for h in candidates if h.replace(".", "").isdigit()]
-        local_ip = ipv4[0] if ipv4 else (candidates[0] if candidates else "")
+        ipv4 = [h for h in hosts if all(p.isdigit() for p in h.split(".")) and h.count(".") == 3]
+        local_ip = ipv4[0] if ipv4 else (hosts[0] if hosts else "")
         out["local_ip"] = local_ip
 
-        # --- Library locations (paths as seen by the Plex server) ---
+        # --- 2) Library locations from API (server-side paths) ---
         locations: List[str] = []
         try:
             for section in self.server.library.sections():
                 if section.type not in ("movie", "show"):
                     continue
                 for loc in getattr(section, "locations", []) or []:
-                    if loc:
+                    if loc and str(loc) not in locations:
                         locations.append(str(loc))
         except Exception as e:
             out["message"] = f"Impossible de lire les bibliothèques: {e}"
             return out
-
+        out["locations"] = locations
         if not locations:
-            out["message"] = "Aucun chemin de bibliothèque trouvé"
+            out["message"] = "Aucun chemin de bibliothèque dans l'API Plex"
             return out
 
-        # Common path prefix (posix style from server)
-        norm = [p.replace("\\", "/").rstrip("/") for p in locations]
-        prefix = norm[0]
-        for p in norm[1:]:
-            while prefix and not p.startswith(prefix):
-                prefix = prefix.rsplit("/", 1)[0] if "/" in prefix else ""
-            if not prefix:
-                break
-        out["plex_prefix"] = prefix
-
-        # Map server path → Windows UNC share.
-        # Synology/QNAP: /volume1/Pour-tous/MediaCenter → share = Pour-tous
-        # (skip volume1/volume2/mnt/export); network_root = \\IP\Pour-tous
-        # plex_prefix kept as /volume1/Pour-tous so rest maps under MediaCenter/...
-        network_root = ""
-        if local_ip and prefix:
-            parts = [x for x in prefix.split("/") if x]
-            skip = {"volume1", "volume2", "volume3", "volume4", "mnt", "export", "share", "media"}
-            share_parts = list(parts)
-            # Drop leading volume markers when something follows
-            while len(share_parts) > 1 and share_parts[0].lower() in skip:
-                share_parts = share_parts[1:]
-            if share_parts:
-                share_name = share_parts[0]
-                network_root = f"\\\\{local_ip}\\{share_name}"
-                # Align plex_prefix to the folder that maps to the share root
-                # e.g. /volume1/Pour-tous  (not deeper MediaCenter) when share is Pour-tous
-                if share_name in parts:
-                    idx = parts.index(share_name)
-                    # prefix up to and including share_name on the server
-                    aligned = "/" + "/".join(parts[: idx + 1])
-                    out["plex_prefix"] = aligned
-        out["network_root"] = network_root
-
-        if network_root and out["plex_prefix"]:
+        # --- 3) Already Windows UNC / drive letter? ---
+        win_locs = [
+            loc for loc in locations
+            if loc.startswith("\\\\") or (len(loc) >= 3 and loc[1] == ":" and loc[0].isalpha())
+        ]
+        if win_locs:
+            sample = win_locs[0].replace("/", "\\")
+            if sample.startswith("\\\\"):
+                bits = [b for b in sample.split("\\") if b]
+                if len(bits) >= 2:
+                    out["network_root"] = f"\\\\{bits[0]}\\{bits[1]}"
+                    out["plex_prefix"] = f"\\\\{bits[0]}\\{bits[1]}"
+                else:
+                    out["network_root"] = sample
+                    out["plex_prefix"] = self._common_prefix(win_locs).replace("/", "\\")
+            else:
+                out["network_root"] = sample[:2]
+                out["plex_prefix"] = self._common_prefix(win_locs).replace("/", "\\") or sample
             out["message"] = (
-                f"Proposition : {network_root}\n"
-                f"(préfixe Plex : {out['plex_prefix']})\n"
-                f"Vérifiez / corrigez si besoin (ex: \\\\Nazgul\\Pour-tous)."
+                f"Chemins Windows détectés dans l'API Plex.\n"
+                f"Racine proposée : {out['network_root']}\n"
+                f"Préfixe Plex : {out['plex_prefix']}"
             )
-        elif out["plex_prefix"]:
+            return out
+
+        # --- 4) Linux/NAS paths → reconstruct UNC candidates ---
+        prefix = self._common_prefix(locations)
+        out["plex_prefix"] = prefix
+        if not local_ip:
             out["message"] = (
-                f"Préfixe Plex trouvé ({out['plex_prefix']}) mais "
-                "aucune IP LAN utilisable (évite les adresses *.plex.direct)."
+                f"Préfixe Plex API : {prefix}\n"
+                "Aucune IP LAN utilisable (adresses *.plex.direct ignorées).\n"
+                "Saisissez manuellement \\\\IP_NAS\\NomDuPartage"
+            )
+            return out
+
+        skip = {
+            "volume1", "volume2", "volume3", "volume4", "volume5",
+            "mnt", "export", "share", "media", "data", "srv", "home",
+        }
+        share_names: List[str] = []
+        for loc in locations:
+            parts = [x for x in loc.replace("\\", "/").split("/") if x]
+            segs = list(parts)
+            while len(segs) > 1 and segs[0].lower() in skip:
+                segs = segs[1:]
+            for s in segs[:2]:
+                if s and s not in share_names and s.lower() not in skip:
+                    share_names.append(s)
+
+        unc_candidates: List[str] = []
+        for share in share_names:
+            unc = f"\\\\{local_ip}\\{share}"
+            if unc not in unc_candidates:
+                unc_candidates.append(unc)
+        out["candidates"] = unc_candidates
+
+        # --- 5) Probe which UNC roots exist on this Windows PC ---
+        import os
+        existing: List[str] = []
+        if os.name == "nt":
+            for unc in unc_candidates:
+                try:
+                    if os.path.isdir(unc):
+                        existing.append(unc)
+                except Exception:
+                    pass
+
+        chosen = existing[0] if existing else (unc_candidates[0] if unc_candidates else "")
+        if chosen and prefix:
+            share = chosen.rstrip("\\").split("\\")[-1]
+            parts = [x for x in prefix.split("/") if x]
+            if share in parts:
+                idx = parts.index(share)
+                out["plex_prefix"] = "/" + "/".join(parts[: idx + 1])
+        out["network_root"] = chosen
+
+        loc_preview = "\n".join(f"  • {l}" for l in locations[:6])
+        if existing:
+            out["message"] = (
+                f"Racine accessible trouvée : {chosen}\n"
+                f"Préfixe Plex : {out['plex_prefix']}\n"
+                f"Emplacements API :\n{loc_preview}"
+            )
+        elif chosen:
+            out["message"] = (
+                f"Proposition (non vérifiée) : {chosen}\n"
+                f"Préfixe Plex : {out['plex_prefix']}\n"
+                f"Emplacements API :\n{loc_preview}\n"
+                "Corrigez si le partage Windows a un autre nom."
             )
         else:
-            out["message"] = "Récupération impossible"
+            out["message"] = (
+                f"Emplacements API :\n{loc_preview}\n"
+                "Impossible de construire un chemin UNC. Saisie manuelle requise."
+            )
         return out
