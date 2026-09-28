@@ -312,39 +312,78 @@ class PlexClient:
         except Exception:
             pass
 
+    @staticmethod
+    def _is_usable_lan_host(host: str) -> bool:
+        """Reject loopback, plex.direct relay hostnames, keep real LAN IP/host."""
+        if not host:
+            return False
+        h = host.strip().lower()
+        if h in ("127.0.0.1", "localhost", "::1"):
+            return False
+        if "plex.direct" in h:
+            return False
+        # IPv4
+        parts = h.split(".")
+        if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+            return True
+        # Short LAN hostname (no dots) e.g. Nazgul
+        if "." not in h and h.replace("-", "").isalnum():
+            return True
+        return False
+
     def detect_path_mapping(self) -> Dict[str, str]:
         """Try to deduce plex_prefix + network_root from the connected server.
 
-        Returns dict with keys: plex_prefix, network_root, local_ip, message.
-        network_root may be empty if the share name cannot be guessed reliably.
+        Returns dict with keys: plex_prefix, network_root, local_ip, message, candidates.
+        Prefers real LAN IPv4 over plex.direct relay hostnames.
         """
-        out = {"plex_prefix": "", "network_root": "", "local_ip": "", "message": ""}
+        out: Dict[str, str] = {
+            "plex_prefix": "",
+            "network_root": "",
+            "local_ip": "",
+            "message": "",
+        }
         if not self.server:
             out["message"] = "Serveur non connecté"
             return out
 
-        # --- Local IP ---
-        local_ip = ""
+        # --- Collect candidate hosts (prefer real IPv4) ---
+        candidates: List[str] = []
+
+        def add_host(h: str) -> None:
+            h = (h or "").strip()
+            if h and h not in candidates and self._is_usable_lan_host(h):
+                candidates.append(h)
+
         try:
             base = (self.server_url or getattr(self.server, "_baseurl", "") or "").rstrip("/")
-            # http://192.168.1.10:32400
             if "://" in base:
-                host = base.split("://", 1)[1].split("/")[0].split(":")[0]
-                if host and host not in ("127.0.0.1", "localhost"):
-                    local_ip = host
+                add_host(base.split("://", 1)[1].split("/")[0].split(":")[0])
         except Exception:
             pass
-        if not local_ip:
-            try:
-                # Fallback: connection list on the resource
-                for c in getattr(self.server, "connections", []) or []:
-                    addr = getattr(c, "address", "") or ""
-                    local = getattr(c, "local", True)
-                    if local and addr and addr not in ("127.0.0.1", "localhost"):
-                        local_ip = addr
-                        break
-            except Exception:
-                pass
+
+        # plexapi server connections (local LAN first)
+        try:
+            conns = list(getattr(self.server, "connections", []) or [])
+            # Prefer local=True
+            for prefer_local in (True, False):
+                for c in conns:
+                    local = getattr(c, "local", None)
+                    if prefer_local and local is False:
+                        continue
+                    if not prefer_local and local is True:
+                        continue
+                    add_host(getattr(c, "address", "") or "")
+                    # uri may be http://192.168.x.x:32400
+                    uri = getattr(c, "uri", "") or ""
+                    if "://" in uri:
+                        add_host(uri.split("://", 1)[1].split("/")[0].split(":")[0])
+        except Exception:
+            pass
+
+        # Prefer pure IPv4 over hostnames
+        ipv4 = [h for h in candidates if h.replace(".", "").isdigit()]
+        local_ip = ipv4[0] if ipv4 else (candidates[0] if candidates else "")
         out["local_ip"] = local_ip
 
         # --- Library locations (paths as seen by the Plex server) ---
@@ -374,21 +413,41 @@ class PlexClient:
                 break
         out["plex_prefix"] = prefix
 
-        # Guess Windows UNC: \\IP\first_segment
-        # e.g. /volume1/media → \\192.168.1.10\volume1  (Synology often shares the volume)
-        # or /share/Films → \\IP\share
+        # Map server path → Windows UNC share.
+        # Synology/QNAP: /volume1/Pour-tous/MediaCenter → share = Pour-tous
+        # (skip volume1/volume2/mnt/export); network_root = \\IP\Pour-tous
+        # plex_prefix kept as /volume1/Pour-tous so rest maps under MediaCenter/...
         network_root = ""
         if local_ip and prefix:
             parts = [x for x in prefix.split("/") if x]
-            if parts:
-                share = parts[0]
-                network_root = f"\\\\{local_ip}\\{share}"
+            skip = {"volume1", "volume2", "volume3", "volume4", "mnt", "export", "share", "media"}
+            share_parts = list(parts)
+            # Drop leading volume markers when something follows
+            while len(share_parts) > 1 and share_parts[0].lower() in skip:
+                share_parts = share_parts[1:]
+            if share_parts:
+                share_name = share_parts[0]
+                network_root = f"\\\\{local_ip}\\{share_name}"
+                # Align plex_prefix to the folder that maps to the share root
+                # e.g. /volume1/Pour-tous  (not deeper MediaCenter) when share is Pour-tous
+                if share_name in parts:
+                    idx = parts.index(share_name)
+                    # prefix up to and including share_name on the server
+                    aligned = "/" + "/".join(parts[: idx + 1])
+                    out["plex_prefix"] = aligned
         out["network_root"] = network_root
 
-        if network_root and prefix:
-            out["message"] = f"Détecté : {network_root}  (préfixe Plex : {prefix})"
-        elif prefix:
-            out["message"] = f"Préfixe Plex trouvé ({prefix}) mais IP/partage non déterminés"
+        if network_root and out["plex_prefix"]:
+            out["message"] = (
+                f"Proposition : {network_root}\n"
+                f"(préfixe Plex : {out['plex_prefix']})\n"
+                f"Vérifiez / corrigez si besoin (ex: \\\\Nazgul\\Pour-tous)."
+            )
+        elif out["plex_prefix"]:
+            out["message"] = (
+                f"Préfixe Plex trouvé ({out['plex_prefix']}) mais "
+                "aucune IP LAN utilisable (évite les adresses *.plex.direct)."
+            )
         else:
             out["message"] = "Récupération impossible"
         return out

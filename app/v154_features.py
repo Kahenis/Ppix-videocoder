@@ -22,10 +22,10 @@ WARN = "#FFB020"
 
 
 def ask_network_root_before_scan(app) -> None:
-    """Propose auto-detection of network_root if not configured."""
+    """Propose auto-detection of network_root; user can edit before accepting."""
     box = ctk.CTkToplevel(app)
     box.title("Racine réseau")
-    box.geometry("520x220")
+    box.geometry("560x320")
     box.configure(fg_color=BG)
     box.transient(app)
     try:
@@ -35,23 +35,47 @@ def ask_network_root_before_scan(app) -> None:
     ctk.CTkLabel(
         box,
         text=(
-            "Vous n'avez pas saisi de chemin réseau dans les paramètres.\n\n"
-            "Voulez-vous que je le cherche automatiquement ?"
+            "Vous n'avez pas saisi de chemin réseau dans les paramètres.\n"
+            "Exemple attendu : \\\\Nazgul\\Pour-tous  ou  \\\\192.168.1.240\\Pour-tous"
         ),
-        wraplength=480,
+        wraplength=520,
         justify="left",
         text_color=TEXT,
-    ).pack(padx=18, pady=(18, 10))
-    status = ctk.CTkLabel(box, text="", text_color=MUTED)
+    ).pack(padx=18, pady=(18, 8))
+    status = ctk.CTkLabel(box, text="", text_color=MUTED, wraplength=520, justify="left")
     status.pack(padx=18, pady=4)
+    entry = ctk.CTkEntry(box, width=480, fg_color=CARD, placeholder_text=r"\\IP_ou_NAS\Partage")
+    entry.pack(padx=18, pady=8)
 
-    def on_no():
+    def close_box():
         try:
             box.grab_release()
         except Exception:
             pass
-        box.destroy()
+        try:
+            box.destroy()
+        except Exception:
+            pass
+
+    def on_no():
+        close_box()
         app._show_settings()
+
+    def accept_and_scan(root: str, pref: str = ""):
+        root = (root or "").strip()
+        if not root:
+            status.configure(text="Indiquez un chemin réseau valide.", text_color=WARN)
+            return
+        app.settings["network_root"] = root
+        if pref and not (app.settings.get("plex_prefix") or "").strip():
+            app.settings["plex_prefix"] = pref
+        save_settings(app.settings)
+        app._log(f"Racine réseau : {root}")
+        close_box()
+        app._do_start_scan()
+
+    def on_use_entry():
+        accept_and_scan(entry.get())
 
     def on_yes():
         status.configure(text="Recherche en cours…", text_color=WARN)
@@ -66,52 +90,45 @@ def ask_network_root_before_scan(app) -> None:
             def apply():
                 root = (info.get("network_root") or "").strip()
                 pref = (info.get("plex_prefix") or "").strip()
+                msg = info.get("message") or ""
                 if root:
-                    app.settings["network_root"] = root
-                    if pref and not (app.settings.get("plex_prefix") or "").strip():
-                        app.settings["plex_prefix"] = pref
-                    save_settings(app.settings)
-                    app._log(info.get("message") or f"Racine réseau : {root}")
-                    try:
-                        box.grab_release()
-                    except Exception:
-                        pass
-                    box.destroy()
-                    app._do_start_scan()
+                    entry.delete(0, "end")
+                    entry.insert(0, root)
+                    status.configure(
+                        text=msg + "\nCorrigez si besoin puis cliquez « Utiliser ce chemin ».",
+                        text_color=TEXT,
+                    )
+                    # store prefix for accept
+                    box._detected_prefix = pref  # type: ignore
                 else:
                     status.configure(
-                        text="Récupération impossible, retour dans les paramètres",
+                        text=(msg or "Récupération impossible.")
+                        + "\nSaisissez le chemin manuellement ou ouvrez les paramètres.",
                         text_color=WARN,
                     )
-                    app._log(info.get("message") or "Récupération automatique impossible.")
-
-                    def go_settings():
-                        try:
-                            box.grab_release()
-                        except Exception:
-                            pass
-                        try:
-                            box.destroy()
-                        except Exception:
-                            pass
-                        app._show_settings()
-
-                    app.after(2000, go_settings)
+                    box._detected_prefix = ""  # type: ignore
 
             app._ui(apply)
 
         threading.Thread(target=work, daemon=True).start()
 
+    def on_use_detected():
+        accept_and_scan(entry.get(), getattr(box, "_detected_prefix", "") or "")
+
     row = ctk.CTkFrame(box, fg_color=BG)
-    row.pack(pady=14)
+    row.pack(pady=12)
     ctk.CTkButton(
-        row, text="Oui, chercher automatiquement", width=220,
+        row, text="Chercher automatiquement", width=180,
         fg_color=ACCENT, text_color="#111", hover_color="#C48A0B", command=on_yes,
-    ).pack(side="left", padx=6)
+    ).pack(side="left", padx=4)
     ctk.CTkButton(
-        row, text="Non, ouvrir les paramètres", width=200,
+        row, text="Utiliser ce chemin", width=150,
+        fg_color=OK if False else "#2E7D4F", text_color="#fff", command=on_use_detected,
+    ).pack(side="left", padx=4)
+    ctk.CTkButton(
+        row, text="Paramètres", width=110,
         fg_color="#333", command=on_no,
-    ).pack(side="left", padx=6)
+    ).pack(side="left", padx=4)
     box.protocol("WM_DELETE_WINDOW", on_no)
 
 

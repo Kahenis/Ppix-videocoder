@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.5.4"
+APP_VERSION = "1.5.5"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {

@@ -146,7 +146,7 @@ class App(ctk.CTk):
         self.btn_nav_connect.pack(side="left", padx=(0, 6))
         self.btn_nav_scan = ctk.CTkButton(nav, text="2. Scanner", width=140, fg_color="#333", state="disabled", command=lambda: self._show_page("scan"))
         self.btn_nav_scan.pack(side="left", padx=6)
-        self.btn_nav_queue = ctk.CTkButton(nav, text="3. File d'attente", width=170, fg_color="#333", state="disabled", command=lambda: self._show_page("queue"))
+        self.btn_nav_queue = ctk.CTkButton(nav, text="3. Encoder", width=150, fg_color="#333", state="disabled", command=lambda: self._show_page("queue"))
         self.btn_nav_queue.pack(side="left", padx=6)
         self.content = ctk.CTkFrame(self, fg_color=BG)
         self.content.pack(fill="both", expand=True, padx=14, pady=8)
@@ -188,23 +188,27 @@ class App(ctk.CTk):
     def _set_connected_ui(self, ok: bool, waiting: bool = False, error: bool = False):
         if waiting:
             self.lbl_conn.configure(text="Attente PIN…", text_color=WARN)
-            self.btn_nav_connect.configure(fg_color=WARN, text_color="#111")
+            self.btn_nav_connect.configure(text="1. Connexion", fg_color=WARN, text_color="#111")
         elif ok:
             name = self.plex.server_name or "OK"
             self.lbl_conn.configure(text=f"Connecte · {name}", text_color=OK)
-            self.btn_nav_connect.configure(fg_color=OK, text_color="#111")
+            self.btn_nav_connect.configure(text="1. Connecté", fg_color=OK, text_color="#111")
             self.btn_nav_scan.configure(state="normal")
             self.btn_nav_queue.configure(state="normal")
             self._update_queue_badge()
         elif error:
             self.lbl_conn.configure(text="Connexion echouee", text_color="#f87171")
-            self.btn_nav_connect.configure(fg_color=DANGER, text_color=TEXT)
+            self.btn_nav_connect.configure(text="1. Connexion", fg_color=DANGER, text_color=TEXT)
         else:
             self.lbl_conn.configure(text="Non connecte", text_color=MUTED)
+            try:
+                self.btn_nav_connect.configure(text="1. Connexion")
+            except Exception:
+                pass
 
     def _update_queue_badge(self):
         n = len(self.queue)
-        label = f"3. File d'attente ({n})" if n else "3. File d'attente"
+        label = f"3. Encoder ({n})" if n else "3. Encoder"
         try:
             self.btn_nav_queue.configure(text=label, state="normal")
         except Exception:
@@ -364,7 +368,6 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Lancer le scan", width=150, fg_color=ACCENT, text_color="#111", hover_color="#C48A0B", command=self._start_scan).pack(side="left", padx=4)
         ctk.CTkButton(row, text="Tout selectionner", width=140, fg_color="#333", command=self._select_all).pack(side="left", padx=4)
         ctk.CTkButton(row, text="Tout deselectionner", width=150, fg_color="#333", command=self._deselect_all).pack(side="left", padx=4)
-        ctk.CTkButton(row, text="Ajouter a la file", width=150, fg_color=OK, text_color="#111", hover_color="#2bb86e", command=self._add_to_queue).pack(side="left", padx=4)
         filt = ctk.CTkFrame(top, fg_color=PANEL)
         filt.pack(fill="x", padx=12, pady=(0, 6))
         ctk.CTkLabel(filt, text="Ne pas lister les fichiers deja en :", text_color=MUTED).pack(side="left", padx=(4, 8))
@@ -580,13 +583,59 @@ class App(ctk.CTk):
         for i, job in enumerate(self.queue):
             row = ctk.CTkFrame(self.queue_list, fg_color=CARD, corner_radius=6)
             row.pack(fill="x", padx=8, pady=3)
-            ctk.CTkLabel(row, text=f"{i+1}. {Path(job.video_path).name[:55]}", width=340, anchor="w", text_color=TEXT).pack(side="left", padx=8, pady=6)
-            ctk.CTkLabel(row, text=job.codec.upper(), width=55, text_color=ACCENT).pack(side="left")
-            prog = ctk.CTkProgressBar(row, width=180, progress_color=ACCENT)
-            prog.set(max(0.0, min(1.0, job.progress / 100.0)))
-            prog.pack(side="left", padx=10)
+            ctk.CTkLabel(
+                row, text=f"{i+1}. {Path(job.video_path).name[:42]}",
+                width=260, anchor="w", text_color=TEXT,
+            ).pack(side="left", padx=6, pady=6)
+
+            # Ancien codec (s'estompe avec la progression) → jauge → nouveau codec
+            vinfo = getattr(job, "_video_info", None)
+            old_codec = (getattr(vinfo, "video_codec", "") or getattr(job, "source_container", "") or "?").lower()
+            old_cont = (getattr(vinfo, "container", "") or getattr(job, "source_container", "") or "").lower()
+            if old_cont:
+                old_label = f"{old_codec}/{old_cont}"
+            else:
+                old_label = old_codec
+            new_codec = (job.codec or "hevc").lower()
+            # Affichage type hevc/h265/mkv
+            alias = {"hevc": "h265", "h264": "avc"}.get(new_codec, new_codec)
+            new_cont = (job.container or "mp4").lower()
+            new_label = f"{new_codec}/{alias}/{new_cont}"
+
+            frac = max(0.0, min(1.0, (job.progress or 0) / 100.0))
+            # Fade: from bright muted → near background as progress rises
+            # 0% → #C0C0C0, 100% → #2A2A2A (quasi invisible sur fond sombre)
+            if job.status == "done":
+                old_color = "#2A2A2A"
+                show_old = False
+            else:
+                r = int(192 - 150 * frac)
+                g = int(192 - 150 * frac)
+                b = int(192 - 150 * frac)
+                old_color = f"#{r:02x}{g:02x}{b:02x}"
+                show_old = frac < 0.98
+
+            if show_old:
+                ctk.CTkLabel(row, text=old_label, width=90, anchor="e", text_color=old_color).pack(
+                    side="left", padx=(4, 2)
+                )
+            else:
+                ctk.CTkLabel(row, text="", width=90).pack(side="left", padx=(4, 2))
+
+            prog = ctk.CTkProgressBar(row, width=160, progress_color=ACCENT)
+            prog.set(frac)
+            prog.pack(side="left", padx=6)
+
+            new_color = ACCENT if job.status in ("running", "done", "pending") else MUTED
+            ctk.CTkLabel(row, text=new_label, width=110, anchor="w", text_color=new_color).pack(
+                side="left", padx=(2, 4)
+            )
+
             colors = {"done": OK, "error": "#f87171", "running": "#60a5fa", "cancelled": WARN}
-            ctk.CTkLabel(row, text=f"{job.progress:.0f}% · {job.status}", text_color=colors.get(job.status, MUTED)).pack(side="left", padx=6)
+            ctk.CTkLabel(
+                row, text=f"{job.progress:.0f}% · {job.status}",
+                text_color=colors.get(job.status, MUTED), width=100,
+            ).pack(side="left", padx=4)
 
     def _start_queue(self):
         if self.queue_running:
