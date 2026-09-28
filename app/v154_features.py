@@ -9,6 +9,7 @@ import customtkinter as ctk
 
 from .config import (
     SUPPORTED_CODECS, save_settings, path_exists_for_open, is_legacy_container,
+    resolve_output_container,
     is_audio_safe_for_plex,
 )
 from .plex_client import VideoInfo
@@ -136,10 +137,8 @@ def make_job_for_video(app, v: VideoInfo) -> Optional[EncodeJob]:
         codec = "hevc"
     mapped = app._resolve_path(v.file_path)
     src_for_encode = mapped if path_exists_for_open(mapped) else v.file_path
-    cont = app.settings.get("container", "mp4")
     src_cont = (v.container or Path(v.file_path).suffix.lstrip(".")).lower()
-    if app.settings.get("mkv_for_legacy", True) and is_legacy_container(src_cont):
-        cont = "mkv"
+    cont = resolve_output_container(src_cont, app.settings)
     out_ext = ".mkv" if cont == "mkv" else ".mp4"
     out_path = str(Path(src_for_encode).with_suffix(f".optimized{out_ext}"))
     keep_copy = bool(app.settings.get("keep_audio_copy", False))

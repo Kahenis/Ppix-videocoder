@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.5.8"
+APP_VERSION = "1.5.9"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
@@ -140,6 +140,27 @@ def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:
 
 def is_legacy_container(cont: str) -> bool:
     return (cont or "").lower().lstrip(".") in LEGACY_CONTAINERS
+
+def resolve_output_container(src_cont: str, settings: dict | None = None) -> str:
+    """Choisit le conteneur de sortie de façon cohérente avec la source.
+
+    - AVI/WMV/MPG… → mkv si mkv_for_legacy (recommandé)
+    - Source déjà mkv / mp4 / m4v → on conserve (évite d'annoncer mp4 puis de
+      réécrire un fichier .mkv, et inverse)
+    - Sinon → conteneur préféré des paramètres (défaut mp4)
+    """
+    settings = settings or {}
+    src = (src_cont or "").lower().lstrip(".")
+    preferred = (settings.get("container") or "mp4").lower()
+    if preferred not in ("mp4", "mkv"):
+        preferred = "mp4"
+    if settings.get("mkv_for_legacy", True) and src in LEGACY_CONTAINERS:
+        return "mkv"
+    if src in ("mkv", "webm"):
+        return "mkv"
+    if src in ("mp4", "m4v", "mov"):
+        return "mp4"
+    return preferred
 
 def is_audio_safe_for_plex(codec: str) -> bool:
     c = (codec or "").lower().strip()

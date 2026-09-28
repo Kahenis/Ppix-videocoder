@@ -15,7 +15,7 @@ from .config import (
     SUPPORTED_CODECS, PRESETS, HARDWARE_OPTIONS, APP_NAME, APP_VERSION,
     CODEC_CHOICE_LABELS, MIN_KEEP_OPTIONS, QUALITY_OPTIONS, AUDIO_BITRATE_OPTIONS,
     apply_path_maps, path_exists_for_open, common_path_prefix,
-    is_legacy_container, is_audio_safe_for_plex,
+    is_legacy_container, resolve_output_container, is_audio_safe_for_plex,
 )
 from .plex_client import PlexClient, VideoInfo
 from .encoder import Encoder, EncodeJob
@@ -529,10 +529,8 @@ class App(ctk.CTk):
                     codec = "hevc"
                 mapped = self._resolve_path(v.file_path)
                 src_for_encode = mapped if path_exists_for_open(mapped) else v.file_path
-                cont = self.settings.get("container", "mp4")
                 src_cont = (v.container or Path(v.file_path).suffix.lstrip(".")).lower()
-                if self.settings.get("mkv_for_legacy", True) and is_legacy_container(src_cont):
-                    cont = "mkv"
+                cont = resolve_output_container(src_cont, self.settings)
                 out_ext = ".mkv" if cont == "mkv" else ".mp4"
                 out_path = str(Path(src_for_encode).with_suffix(f".optimized{out_ext}"))
                 keep_copy = bool(self.settings.get("keep_audio_copy", False))
