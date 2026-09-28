@@ -164,6 +164,57 @@ class App(ctk.CTk):
         for w in self.content.winfo_children():
             w.destroy()
 
+
+    def _prune_completed_from_scan(self) -> int:
+        """Retire de la liste scan les fichiers deja encodes avec succes (sans rescan)."""
+        if not self.videos:
+            return 0
+        done_plex = set()
+        done_paths = set()
+        for j in self.queue:
+            if getattr(j, "status", "") != "done":
+                continue
+            plex = getattr(j, "_plex_path", None)
+            if plex:
+                done_plex.add(plex)
+            if j.video_path:
+                done_paths.add(j.video_path)
+            vinfo = getattr(j, "_video_info", None)
+            if vinfo is not None:
+                fp = getattr(vinfo, "file_path", "") or ""
+                if fp:
+                    done_plex.add(fp)
+                rk = getattr(vinfo, "rating_key", None)
+                if rk is not None and fp:
+                    done_plex.add(f"{rk}|{fp}")
+        if not done_plex and not done_paths:
+            return 0
+        before = len(self.videos)
+        kept = []
+        for v in self.videos:
+            key = f"{v.rating_key}|{v.file_path}"
+            if v.file_path in done_plex or key in done_plex:
+                continue
+            # chemin encode (Windows mappe)
+            try:
+                mapped = self._resolve_path(v.file_path)
+            except Exception:
+                mapped = v.file_path
+            if mapped in done_paths or v.file_path in done_paths:
+                continue
+            kept.append(v)
+        removed = before - len(kept)
+        if removed:
+            self.videos = kept
+            valid = {f"{v.rating_key}|{v.file_path}" for v in kept}
+            self.selected = {k: v for k, v in self.selected.items() if k in valid}
+            self.codec_choice = {k: v for k, v in self.codec_choice.items() if k in valid}
+            # Retirer aussi les jobs termines de la file (optionnel mais propre)
+            self.queue = [j for j in self.queue if getattr(j, "status", "") != "done"]
+            self._update_queue_badge()
+            self._log(f"{removed} fichier(s) reussi(s) retires de la liste scan.")
+        return removed
+
     def _show_page(self, name: str):
         self._page = name
         self._clear_content()
@@ -181,6 +232,7 @@ class App(ctk.CTk):
         if name == "connect":
             self._page_connect()
         elif name == "scan":
+            self._prune_completed_from_scan()
             self._page_scan()
         elif name == "queue":
             self._page_queue()
