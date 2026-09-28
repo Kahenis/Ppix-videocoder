@@ -1,0 +1,30 @@
+name: Decode docs screenshots
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'docs/*.b64'
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode base64 screenshots
+        run: |
+          python3 << 'PY'
+          import base64, pathlib
+          docs = pathlib.Path('docs')
+          for p in sorted(docs.glob('*.b64')):
+              out = p.with_suffix('')
+              out.write_bytes(base64.b64decode(p.read_text().strip()))
+              print(f'wrote {out} ({out.stat().st_size} bytes)')
+          PY
+      - name: Commit images
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/*.jpg docs/*.png 2>/dev/null || true
+          git status
+          git diff --staged --quiet || (git commit -m "docs: add screenshots (server name masked)" && git push)

@@ -10,6 +10,14 @@ Application **Windows** autonome pour optimiser les codecs vidéo de vos bibliot
 
 ---
 
+## Aperçu
+
+| Scanner | Encoder | Paramètres |
+|:---:|:---:|:---:|
+| ![Scan](docs/screenshot-scan.jpg) | ![File](docs/screenshot-queue.jpg) | ![Réglages](docs/screenshot-settings.jpg) |
+
+---
+
 ## Téléchargement
 
 1. Ouvrez [la dernière release](https://github.com/Kahenis/Ppix-videocoder/releases/latest)
@@ -17,11 +25,11 @@ Application **Windows** autonome pour optimiser les codecs vidéo de vos bibliot
 3. Décompressez
 4. Lancez `Ppix-Videocoder.exe`
 
-**Rien d’autre à installer** : FFmpeg est embarqué dans l’archive.
+**Rien d'autre à installer** : FFmpeg est embarqué dans l'archive.
 
 Les réglages (token, chemins réseau, historique) sont conservés entre les versions dans :
 
-`%USERPROFILE%\.ppix-videocoder\`
+`%USERPROFILE%\\.ppix-videocoder\\`
 
 ---
 
@@ -42,10 +50,10 @@ Les réglages (token, chemins réseau, historique) sont conservés entre les ver
 ## Utilisation rapide
 
 1. **1. Connexion** → Se connecter via plex.tv/link  
-2. **Paramètres** → Racine réseau Windows (`\\IP\Partage`) si besoin  
+2. **Paramètres** → Racine réseau Windows (`\\\\IP\\Partage`) si besoin  
 3. **2. Scanner** → Lancer le scan  
 4. Cocher les fichiers à convertir (ajout automatique à la file)  
-5. **3. Encoder** → Lancer l’encodage  
+5. **3. Encoder** → Lancer l'encodage  
 
 Astuce : activez le *mode essai* dans les paramètres pour une simulation sans écrire de fichiers.
 
@@ -54,7 +62,7 @@ Astuce : activez le *mode essai* dans les paramètres pour une simulation sans �
 ## Avertissement
 
 Développement personnel. Des bugs peuvent encore apparaître.  
-Aucun engagement de responsabilité en cas de problème sur vos bibliothèques Plex — **faites des sauvegardes** et testez d’abord en mode essai.
+Aucun engagement de responsabilité en cas de problème sur vos bibliothèques Plex — **faites des sauvegardes** et testez d'abord en mode essai.
 
 ---
 
