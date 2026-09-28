@@ -22,6 +22,10 @@ from .encoder import Encoder, EncodeJob
 from .logger import log, read_log, clear_log, open_log_folder, get_log_path
 from .about_dialog import show_about
 from .results_list import ResultsList
+from .v154_features import (
+    ask_network_root_before_scan, on_result_select,
+    queue_add_video, queue_remove_video, make_job_for_video,
+)
 
 ACCENT = "#E5A00D"
 BG = "#161616"
@@ -142,7 +146,7 @@ class App(ctk.CTk):
         self.btn_nav_connect.pack(side="left", padx=(0, 6))
         self.btn_nav_scan = ctk.CTkButton(nav, text="2. Scanner", width=140, fg_color="#333", state="disabled", command=lambda: self._show_page("scan"))
         self.btn_nav_scan.pack(side="left", padx=6)
-        self.btn_nav_queue = ctk.CTkButton(nav, text="3. File d'attente", width=170, fg_color="#333", state="disabled", command=lambda: self._show_page("queue"))
+        self.btn_nav_queue = ctk.CTkButton(nav, text="3. Encoder", width=150, fg_color="#333", state="disabled", command=lambda: self._show_page("queue"))
         self.btn_nav_queue.pack(side="left", padx=6)
         self.content = ctk.CTkFrame(self, fg_color=BG)
         self.content.pack(fill="both", expand=True, padx=14, pady=8)
@@ -184,23 +188,27 @@ class App(ctk.CTk):
     def _set_connected_ui(self, ok: bool, waiting: bool = False, error: bool = False):
         if waiting:
             self.lbl_conn.configure(text="Attente PIN…", text_color=WARN)
-            self.btn_nav_connect.configure(fg_color=WARN, text_color="#111")
+            self.btn_nav_connect.configure(text="1. Connexion", fg_color=WARN, text_color="#111")
         elif ok:
             name = self.plex.server_name or "OK"
             self.lbl_conn.configure(text=f"Connecte · {name}", text_color=OK)
-            self.btn_nav_connect.configure(fg_color=OK, text_color="#111")
+            self.btn_nav_connect.configure(text="1. Connecté", fg_color=OK, text_color="#111")
             self.btn_nav_scan.configure(state="normal")
             self.btn_nav_queue.configure(state="normal")
             self._update_queue_badge()
         elif error:
             self.lbl_conn.configure(text="Connexion echouee", text_color="#f87171")
-            self.btn_nav_connect.configure(fg_color=DANGER, text_color=TEXT)
+            self.btn_nav_connect.configure(text="1. Connexion", fg_color=DANGER, text_color=TEXT)
         else:
             self.lbl_conn.configure(text="Non connecte", text_color=MUTED)
+            try:
+                self.btn_nav_connect.configure(text="1. Connexion")
+            except Exception:
+                pass
 
     def _update_queue_badge(self):
         n = len(self.queue)
-        label = f"3. File d'attente ({n})" if n else "3. File d'attente"
+        label = f"3. Encoder ({n})" if n else "3. Encoder"
         try:
             self.btn_nav_queue.configure(text=label, state="normal")
         except Exception:
@@ -360,7 +368,6 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Lancer le scan", width=150, fg_color=ACCENT, text_color="#111", hover_color="#C48A0B", command=self._start_scan).pack(side="left", padx=4)
         ctk.CTkButton(row, text="Tout selectionner", width=140, fg_color="#333", command=self._select_all).pack(side="left", padx=4)
         ctk.CTkButton(row, text="Tout deselectionner", width=150, fg_color="#333", command=self._deselect_all).pack(side="left", padx=4)
-        ctk.CTkButton(row, text="Ajouter a la file", width=150, fg_color=OK, text_color="#111", hover_color="#2bb86e", command=self._add_to_queue).pack(side="left", padx=4)
         filt = ctk.CTkFrame(top, fg_color=PANEL)
         filt.pack(fill="x", padx=12, pady=(0, 6))
         ctk.CTkLabel(filt, text="Ne pas lister les fichiers deja en :", text_color=MUTED).pack(side="left", padx=(4, 8))
@@ -390,6 +397,12 @@ class App(ctk.CTk):
         if self.scan_thread and self.scan_thread.is_alive():
             self._log("Scan deja en cours.")
             return
+        if not (self.settings.get("network_root") or "").strip():
+            ask_network_root_before_scan(self)
+            return
+        self._do_start_scan()
+
+    def _do_start_scan(self):
         self.scan_progress.set(0)
         self.scan_status.configure(text="Scan en cours…")
         self._log("Scan des bibliotheques…")
@@ -438,6 +451,7 @@ class App(ctk.CTk):
             self.videos, self.selected, self.codec_choice,
             on_status=lambda s: self.scan_status.configure(text=s) if hasattr(self, "scan_status") else None,
             on_folder=self._open_folder, on_plex=self._open_in_plex,
+            on_select=lambda v, c: on_result_select(self, v, c),
         )
 
     def _select_all(self):
@@ -569,13 +583,59 @@ class App(ctk.CTk):
         for i, job in enumerate(self.queue):
             row = ctk.CTkFrame(self.queue_list, fg_color=CARD, corner_radius=6)
             row.pack(fill="x", padx=8, pady=3)
-            ctk.CTkLabel(row, text=f"{i+1}. {Path(job.video_path).name[:55]}", width=340, anchor="w", text_color=TEXT).pack(side="left", padx=8, pady=6)
-            ctk.CTkLabel(row, text=job.codec.upper(), width=55, text_color=ACCENT).pack(side="left")
-            prog = ctk.CTkProgressBar(row, width=180, progress_color=ACCENT)
-            prog.set(max(0.0, min(1.0, job.progress / 100.0)))
-            prog.pack(side="left", padx=10)
+            ctk.CTkLabel(
+                row, text=f"{i+1}. {Path(job.video_path).name[:42]}",
+                width=260, anchor="w", text_color=TEXT,
+            ).pack(side="left", padx=6, pady=6)
+
+            # Ancien codec (s'estompe avec la progression) → jauge → nouveau codec
+            vinfo = getattr(job, "_video_info", None)
+            old_codec = (getattr(vinfo, "video_codec", "") or getattr(job, "source_container", "") or "?").lower()
+            old_cont = (getattr(vinfo, "container", "") or getattr(job, "source_container", "") or "").lower()
+            if old_cont:
+                old_label = f"{old_codec}/{old_cont}"
+            else:
+                old_label = old_codec
+            new_codec = (job.codec or "hevc").lower()
+            # Affichage type hevc/h265/mkv
+            alias = {"hevc": "h265", "h264": "avc"}.get(new_codec, new_codec)
+            new_cont = (job.container or "mp4").lower()
+            new_label = f"{new_codec}/{alias}/{new_cont}"
+
+            frac = max(0.0, min(1.0, (job.progress or 0) / 100.0))
+            # Fade: from bright muted → near background as progress rises
+            # 0% → #C0C0C0, 100% → #2A2A2A (quasi invisible sur fond sombre)
+            if job.status == "done":
+                old_color = "#2A2A2A"
+                show_old = False
+            else:
+                r = int(192 - 150 * frac)
+                g = int(192 - 150 * frac)
+                b = int(192 - 150 * frac)
+                old_color = f"#{r:02x}{g:02x}{b:02x}"
+                show_old = frac < 0.98
+
+            if show_old:
+                ctk.CTkLabel(row, text=old_label, width=90, anchor="e", text_color=old_color).pack(
+                    side="left", padx=(4, 2)
+                )
+            else:
+                ctk.CTkLabel(row, text="", width=90).pack(side="left", padx=(4, 2))
+
+            prog = ctk.CTkProgressBar(row, width=160, progress_color=ACCENT)
+            prog.set(frac)
+            prog.pack(side="left", padx=6)
+
+            new_color = ACCENT if job.status in ("running", "done", "pending") else MUTED
+            ctk.CTkLabel(row, text=new_label, width=110, anchor="w", text_color=new_color).pack(
+                side="left", padx=(2, 4)
+            )
+
             colors = {"done": OK, "error": "#f87171", "running": "#60a5fa", "cancelled": WARN}
-            ctk.CTkLabel(row, text=f"{job.progress:.0f}% · {job.status}", text_color=colors.get(job.status, MUTED)).pack(side="left", padx=6)
+            ctk.CTkLabel(
+                row, text=f"{job.progress:.0f}% · {job.status}",
+                text_color=colors.get(job.status, MUTED), width=100,
+            ).pack(side="left", padx=4)
 
     def _start_queue(self):
         if self.queue_running:
@@ -611,8 +671,12 @@ class App(ctk.CTk):
                         if vinfo and self.settings.get("refresh_plex_after", True):
                             try:
                                 self.plex.refresh_item(vinfo.rating_key)
-                            except Exception:
-                                pass
+                                lib = getattr(vinfo, "library", "") or ""
+                                if lib:
+                                    self.plex.refresh_library(lib)
+                                self._ui(self._log, "Plex: analyse forcee (mise a jour codec)")
+                            except Exception as ex:
+                                self._ui(self._log, f"Plex refresh: {ex}")
                         self._ui(self._log, f"Remplace: {Path(job.video_path).name}")
                     self.history.append({"time": datetime.now().isoformat(), "file": job.video_path, "codec": job.codec, "status": job.status, "original_size": job.original_size, "output_size": job.output_size, "duration_s": job.end_time - job.start_time})
                     save_history(self.history)
@@ -716,25 +780,111 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(scroll, text="Mode essai (simulation)", variable=dry, fg_color=ACCENT).pack(anchor="w")
         refresh = ctk.BooleanVar(value=self.settings.get("refresh_plex_after", True))
         ctk.CTkCheckBox(scroll, text="Rafraichir Plex apres remplacement", variable=refresh, fg_color=ACCENT).pack(anchor="w", pady=8)
-        ctk.CTkLabel(scroll, text="Acces fichiers (NAS → Windows)", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(16, 4))
-        ctk.CTkLabel(scroll, text="Racine reseau Windows", text_color=MUTED).pack(anchor="w", pady=(10, 2))
-        e_root = ctk.CTkEntry(scroll, width=480, placeholder_text="\\\\192.168.1.10\\media", fg_color=CARD)
+        ctk.CTkLabel(scroll, text="Accès fichiers (NAS → Windows)", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(16, 4))
+        ctk.CTkLabel(
+            scroll,
+            text=(
+                "Selon les configurations, la détection automatique peut donner des résultats "
+                "non pertinents. Si tel est le cas, veuillez entrer la racine réseau des "
+                "bibliothèques manuellement."
+            ),
+            text_color=WARN,
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 8))
+
+        ctk.CTkLabel(scroll, text="Racine réseau Windows", text_color=MUTED).pack(anchor="w", pady=(6, 2))
+        e_root = ctk.CTkEntry(scroll, width=480, placeholder_text=r"\\192.168.1.10\Media", fg_color=CARD)
         e_root.pack(anchor="w")
         if self.settings.get("network_root"):
             e_root.insert(0, self.settings["network_root"])
-        ctk.CTkLabel(scroll, text="Prefixe chemin Plex", text_color=MUTED).pack(anchor="w", pady=(10, 2))
-        e_pref = ctk.CTkEntry(scroll, width=480, placeholder_text="\\\\share\\cache", fg_color=CARD)
+
+        ctk.CTkLabel(
+            scroll,
+            text="Préfixe chemin Plex (vu par le serveur — détecté via l'API)",
+            text_color=MUTED,
+        ).pack(anchor="w", pady=(10, 2))
+        e_pref = ctk.CTkEntry(scroll, width=480, placeholder_text="/volume1/Media", fg_color=CARD)
         e_pref.pack(anchor="w")
         if self.settings.get("plex_prefix"):
             e_pref.insert(0, self.settings["plex_prefix"])
+
+        status_detect = ctk.CTkLabel(scroll, text="", text_color=MUTED, wraplength=520, justify="left")
+        status_detect.pack(anchor="w", pady=(6, 2))
+
+        def do_auto_detect_root():
+            if not self.plex or not getattr(self.plex, "server", None):
+                status_detect.configure(
+                    text="Connectez-vous d'abord au serveur Plex.",
+                    text_color=WARN,
+                )
+                return
+            status_detect.configure(text="Recherche en cours…", text_color=WARN)
+            d.update_idletasks()
+
+            def work():
+                try:
+                    info = self.plex.detect_path_mapping()
+                except Exception as e:
+                    info = {"network_root": "", "plex_prefix": "", "message": str(e)}
+
+                def apply():
+                    root = (info.get("network_root") or "").strip()
+                    pref = (info.get("plex_prefix") or "").strip()
+                    msg = info.get("message") or ""
+                    if root:
+                        e_root.delete(0, "end")
+                        e_root.insert(0, root)
+                    if pref:
+                        e_pref.delete(0, "end")
+                        e_pref.insert(0, pref)
+                    if root or pref:
+                        status_detect.configure(
+                            text=(msg or "Valeurs proposées — vérifiez puis enregistrez.")[:400],
+                            text_color=TEXT,
+                        )
+                        self._log(msg or f"Détection : root={root} prefix={pref}")
+                    else:
+                        status_detect.configure(
+                            text=(msg or "Détection impossible — saisie manuelle requise.")[:400],
+                            text_color=WARN,
+                        )
+                        self._log(msg or "Détection réseau impossible.")
+
+                self._ui(apply)
+
+            threading.Thread(target=work, daemon=True).start()
+
         def do_auto_prefix():
             pref = self._auto_detect_plex_prefix()
             if not pref:
-                self._log("Scannez d'abord.")
+                status_detect.configure(
+                    text="Scannez d'abord, ou utilisez « Autodétecter la racine ».",
+                    text_color=WARN,
+                )
                 return
             e_pref.delete(0, "end")
             e_pref.insert(0, pref)
-        ctk.CTkButton(scroll, text="Dedaire le prefixe (dernier scan)", width=280, fg_color="#333", command=do_auto_prefix).pack(anchor="w", pady=8)
+            status_detect.configure(text=f"Préfixe déduit du dernier scan : {pref}", text_color=TEXT)
+
+        btn_row = ctk.CTkFrame(scroll, fg_color=BG)
+        btn_row.pack(anchor="w", pady=8)
+        ctk.CTkButton(
+            btn_row,
+            text="Autodétecter la racine",
+            width=200,
+            fg_color=ACCENT,
+            text_color="#111",
+            hover_color="#C48A0B",
+            command=do_auto_detect_root,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row,
+            text="Déduire le préfixe (dernier scan)",
+            width=240,
+            fg_color="#333",
+            command=do_auto_prefix,
+        ).pack(side="left")
         ctk.CTkLabel(scroll, text="Journal de diagnostic", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(18, 4))
         log_row = ctk.CTkFrame(scroll, fg_color=BG)
         log_row.pack(anchor="w", pady=8)
