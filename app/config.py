@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.5.6"
+APP_VERSION = "1.5.7"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 
 SUPPORTED_CODECS = {
@@ -62,18 +62,33 @@ def get_app_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 def get_config_dir() -> Path:
+    """Dossier persistant utilisateur (survit aux mises a jour de l'EXE).
+
+    Toujours %USERPROFILE%\\.ppix-videocoder — jamais a cote de l'executable,
+    pour ne pas perdre token / chemins reseau a chaque nouvelle version.
+    """
     d = Path.home() / ".ppix-videocoder"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
+def _migrate_legacy_file(name: str) -> None:
+    """Copie settings/history depuis le dossier de l'EXE (anciennes versions)."""
+    dest = get_config_dir() / name
+    if dest.exists():
+        return
+    try:
+        legacy = get_app_dir() / name
+        if legacy.is_file():
+            dest.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:
+        pass
+
 def get_settings_path() -> Path:
-    if getattr(sys, "frozen", False):
-        return get_app_dir() / "settings.json"
+    _migrate_legacy_file("settings.json")
     return get_config_dir() / "settings.json"
 
 def get_history_path() -> Path:
-    if getattr(sys, "frozen", False):
-        return get_app_dir() / "history.json"
+    _migrate_legacy_file("history.json")
     return get_config_dir() / "history.json"
 
 def load_settings() -> dict:

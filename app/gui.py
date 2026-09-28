@@ -780,25 +780,111 @@ class App(ctk.CTk):
         ctk.CTkCheckBox(scroll, text="Mode essai (simulation)", variable=dry, fg_color=ACCENT).pack(anchor="w")
         refresh = ctk.BooleanVar(value=self.settings.get("refresh_plex_after", True))
         ctk.CTkCheckBox(scroll, text="Rafraichir Plex apres remplacement", variable=refresh, fg_color=ACCENT).pack(anchor="w", pady=8)
-        ctk.CTkLabel(scroll, text="Acces fichiers (NAS → Windows)", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(16, 4))
-        ctk.CTkLabel(scroll, text="Racine reseau Windows", text_color=MUTED).pack(anchor="w", pady=(10, 2))
-        e_root = ctk.CTkEntry(scroll, width=480, placeholder_text="\\\\192.168.1.10\\Media", fg_color=CARD)
+        ctk.CTkLabel(scroll, text="Accès fichiers (NAS → Windows)", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(16, 4))
+        ctk.CTkLabel(
+            scroll,
+            text=(
+                "Selon les configurations, la détection automatique peut donner des résultats "
+                "non pertinents. Si tel est le cas, veuillez entrer la racine réseau des "
+                "bibliothèques manuellement."
+            ),
+            text_color=WARN,
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 8))
+
+        ctk.CTkLabel(scroll, text="Racine réseau Windows", text_color=MUTED).pack(anchor="w", pady=(6, 2))
+        e_root = ctk.CTkEntry(scroll, width=480, placeholder_text=r"\\192.168.1.10\Media", fg_color=CARD)
         e_root.pack(anchor="w")
         if self.settings.get("network_root"):
             e_root.insert(0, self.settings["network_root"])
-        ctk.CTkLabel(scroll, text="Prefixe chemin Plex", text_color=MUTED).pack(anchor="w", pady=(10, 2))
-        e_pref = ctk.CTkEntry(scroll, width=480, placeholder_text="\\\\share\\cache", fg_color=CARD)
+
+        ctk.CTkLabel(
+            scroll,
+            text="Préfixe chemin Plex (vu par le serveur — détecté via l'API)",
+            text_color=MUTED,
+        ).pack(anchor="w", pady=(10, 2))
+        e_pref = ctk.CTkEntry(scroll, width=480, placeholder_text="/volume1/Media", fg_color=CARD)
         e_pref.pack(anchor="w")
         if self.settings.get("plex_prefix"):
             e_pref.insert(0, self.settings["plex_prefix"])
+
+        status_detect = ctk.CTkLabel(scroll, text="", text_color=MUTED, wraplength=520, justify="left")
+        status_detect.pack(anchor="w", pady=(6, 2))
+
+        def do_auto_detect_root():
+            if not self.plex or not getattr(self.plex, "server", None):
+                status_detect.configure(
+                    text="Connectez-vous d'abord au serveur Plex.",
+                    text_color=WARN,
+                )
+                return
+            status_detect.configure(text="Recherche en cours…", text_color=WARN)
+            d.update_idletasks()
+
+            def work():
+                try:
+                    info = self.plex.detect_path_mapping()
+                except Exception as e:
+                    info = {"network_root": "", "plex_prefix": "", "message": str(e)}
+
+                def apply():
+                    root = (info.get("network_root") or "").strip()
+                    pref = (info.get("plex_prefix") or "").strip()
+                    msg = info.get("message") or ""
+                    if root:
+                        e_root.delete(0, "end")
+                        e_root.insert(0, root)
+                    if pref:
+                        e_pref.delete(0, "end")
+                        e_pref.insert(0, pref)
+                    if root or pref:
+                        status_detect.configure(
+                            text=(msg or "Valeurs proposées — vérifiez puis enregistrez.")[:400],
+                            text_color=TEXT,
+                        )
+                        self._log(msg or f"Détection : root={root} prefix={pref}")
+                    else:
+                        status_detect.configure(
+                            text=(msg or "Détection impossible — saisie manuelle requise.")[:400],
+                            text_color=WARN,
+                        )
+                        self._log(msg or "Détection réseau impossible.")
+
+                self._ui(apply)
+
+            threading.Thread(target=work, daemon=True).start()
+
         def do_auto_prefix():
             pref = self._auto_detect_plex_prefix()
             if not pref:
-                self._log("Scannez d'abord.")
+                status_detect.configure(
+                    text="Scannez d'abord, ou utilisez « Autodétecter la racine ».",
+                    text_color=WARN,
+                )
                 return
             e_pref.delete(0, "end")
             e_pref.insert(0, pref)
-        ctk.CTkButton(scroll, text="Déduire le préfixe (dernier scan)", width=280, fg_color="#333", command=do_auto_prefix).pack(anchor="w", pady=8)
+            status_detect.configure(text=f"Préfixe déduit du dernier scan : {pref}", text_color=TEXT)
+
+        btn_row = ctk.CTkFrame(scroll, fg_color=BG)
+        btn_row.pack(anchor="w", pady=8)
+        ctk.CTkButton(
+            btn_row,
+            text="Autodétecter la racine",
+            width=200,
+            fg_color=ACCENT,
+            text_color="#111",
+            hover_color="#C48A0B",
+            command=do_auto_detect_root,
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            btn_row,
+            text="Déduire le préfixe (dernier scan)",
+            width=240,
+            fg_color="#333",
+            command=do_auto_prefix,
+        ).pack(side="left")
         ctk.CTkLabel(scroll, text="Journal de diagnostic", font=ctk.CTkFont(weight="bold"), text_color=ACCENT).pack(anchor="w", pady=(18, 4))
         log_row = ctk.CTkFrame(scroll, fg_color=BG)
         log_row.pack(anchor="w", pady=8)
