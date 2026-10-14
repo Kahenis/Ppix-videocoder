@@ -159,8 +159,13 @@ class PlexClient:
         preferred_codec: str = "hevc",
         min_keep_codec: str = "h264",
         progress_cb=None,
+        audio_only_codecs=None,
     ) -> List[VideoInfo]:
-        """Scan libraries; progress_cb(done, total, message) optional."""
+        """Scan libraries; progress_cb(done, total, message) optional.
+
+        audio_only_codecs : si fourni (ex. {"truehd"}), mode « Audio seul » :
+        le filtre vidéo est ignoré et seuls les fichiers dont l'audio est dans
+        cet ensemble sont listés."""
         if not self.server:
             return []
 
@@ -190,6 +195,7 @@ class PlexClient:
                 try:
                     self._extract_videos(
                         item, section, preferred_codec, min_keep_codec, results,
+                        audio_only_codecs=audio_only_codecs,
                     )
                 except Exception:
                     pass
@@ -202,26 +208,35 @@ class PlexClient:
         return results
 
     def _extract_videos(self, item, section, preferred_codec: str, min_keep_codec: str,
-                        results: List[VideoInfo]):
+                        results: List[VideoInfo], audio_only_codecs=None):
         if section.type == "show":
             for episode in item.episodes():
                 self._process_media_item(
                     episode, section, preferred_codec, min_keep_codec, results,
-                    series_title=item.title,
+                    series_title=item.title, audio_only_codecs=audio_only_codecs,
                 )
         else:
-            self._process_media_item(item, section, preferred_codec, min_keep_codec, results)
+            self._process_media_item(
+                item, section, preferred_codec, min_keep_codec, results,
+                audio_only_codecs=audio_only_codecs,
+            )
 
     def _process_media_item(self, item, section, preferred_codec: str, min_keep_codec: str,
-                            results: List[VideoInfo], series_title: str = ""):
+                            results: List[VideoInfo], series_title: str = "",
+                            audio_only_codecs=None):
         if not hasattr(item, "media") or not item.media:
             return
 
         for media in item.media:
             video_codec = (media.videoCodec or "").lower()
 
+            if audio_only_codecs:
+                # Mode « Audio seul » : on ne liste que les fichiers dont l'audio
+                # est dans le filtre (ex. TrueHD), quel que soit le codec vidéo.
+                if (media.audioCodec or "").lower() not in audio_only_codecs:
+                    continue
             # Filtre "codec minimum acceptable" : ne pas lister si déjà assez bon
-            if is_codec_acceptable(video_codec, min_keep_codec):
+            elif is_codec_acceptable(video_codec, min_keep_codec):
                 continue
 
             for part in media.parts:

@@ -29,6 +29,12 @@ MIN_KEEP_OPTIONS = {
     "hevc": "H.265 uniquement (lister tout sauf H.265)",
     "none": "Tout lister (aucun filtre)",
 }
+# Mode « Audio seul » : on ne touche pas à l'image, seul l'audio est converti.
+# « Tout sauf TrueHD » = on NE liste PAS tout ce qui n'est pas du TrueHD,
+# donc on liste uniquement les fichiers dont l'audio est en TrueHD.
+AUDIO_ONLY_OPTIONS = {"truehd": "Tout sauf TrueHD"}
+AUDIO_ONLY_CODECS = {"truehd": {"truehd"}}
+AUDIO_ONLY_TARGET = "ac3"
 NON_OPTIMAL_CODECS = {
     "mpeg2video", "mpeg2", "mpeg4", "msmpeg4", "msmpeg4v2", "msmpeg4v3",
     "wmv1", "wmv2", "wmv3", "vc1", "vp6", "vp6f", "vp8", "theora",
@@ -48,7 +54,7 @@ HARDWARE_OPTIONS = {
     "amf": "Carte graphique AMD (plus rapide si vous en avez une)",
 }
 DEFAULT_SETTINGS = {
-    "preferred_codec": "hevc", "min_keep_codec": "h264", "auto_replace": False,
+    "preferred_codec": "hevc", "min_keep_codec": "h264", "audio_only_filter": "truehd", "auto_replace": False,
     "crf": 24, "preset": "medium", "audio_bitrate": "192k", "audio_channels": 2,
     "keep_audio_copy": False, "hardware_accel": "auto", "container": "mp4",
     "mkv_for_legacy": True, "dry_run": False, "refresh_plex_after": True,

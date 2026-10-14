@@ -14,6 +14,7 @@ from .config import (
     load_settings, save_settings, load_history, save_history,
     SUPPORTED_CODECS, PRESETS, HARDWARE_OPTIONS, APP_NAME, APP_VERSION,
     CODEC_CHOICE_LABELS, MIN_KEEP_OPTIONS, QUALITY_OPTIONS, AUDIO_BITRATE_OPTIONS,
+    AUDIO_ONLY_OPTIONS, AUDIO_ONLY_CODECS, AUDIO_ONLY_TARGET,
     apply_path_maps, path_exists_for_open, common_path_prefix,
     is_legacy_container, resolve_output_container, is_audio_safe_for_plex,
 )
@@ -58,6 +59,7 @@ class App(ctk.CTk):
         self.codec_choice: Dict[str, str] = {}
         self.queue: List[EncodeJob] = []
         self.queue_running = False
+        self.audio_only = False  # mode « Audio seul » (non persisté : démarre décoché)
         self.scan_thread: Optional[threading.Thread] = None
         self._pin_stop = threading.Event()
         self._ui_queue: list = []
@@ -422,7 +424,9 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Tout deselectionner", width=150, fg_color="#333", command=self._deselect_all).pack(side="left", padx=4)
         filt = ctk.CTkFrame(top, fg_color=PANEL)
         filt.pack(fill="x", padx=12, pady=(0, 6))
-        ctk.CTkLabel(filt, text="Ne pas lister les fichiers deja en :", text_color=MUTED).pack(side="left", padx=(4, 8))
+        self.filt_frame = filt
+        self.lbl_min_keep = ctk.CTkLabel(filt, text="Ne pas lister les fichiers deja en :", text_color=MUTED)
+        self.lbl_min_keep.pack(side="left", padx=(4, 8))
         mk_labels = list(MIN_KEEP_OPTIONS.values())
         cur = self.settings.get("min_keep_codec", "h264")
         cur_label = MIN_KEEP_OPTIONS.get(cur, mk_labels[0])
@@ -430,6 +434,27 @@ class App(ctk.CTk):
         self.min_keep_menu = ctk.CTkOptionMenu(filt, values=mk_labels, width=360, fg_color=CARD, command=self._on_min_keep_change)
         self.min_keep_menu.set(cur_label)
         self.min_keep_menu.pack(side="left")
+        # Case « Audio seul », juste après la liste déroulante des codecs
+        self.audio_only_var = ctk.BooleanVar(master=self, value=self.audio_only)
+        self.audio_only_check = ctk.CTkCheckBox(
+            filt, text="Audio seul", variable=self.audio_only_var,
+            command=self._on_audio_only_toggle, fg_color=ACCENT, hover_color="#C48A0B",
+        )
+        self.audio_only_check.pack(side="left", padx=(18, 0))
+        # Ligne d'optimisation audio (affichée uniquement quand la case est cochée)
+        self.audio_row = ctk.CTkFrame(top, fg_color=PANEL)
+        ctk.CTkLabel(
+            self.audio_row, text="optimisation audio seulement, ne pas lister les codecs :", text_color=MUTED,
+        ).pack(side="left", padx=(4, 8))
+        ao_labels = list(AUDIO_ONLY_OPTIONS.values())
+        self._audio_only_label_to_key = {v: k for k, v in AUDIO_ONLY_OPTIONS.items()}
+        ao_cur = AUDIO_ONLY_OPTIONS.get(self.settings.get("audio_only_filter", "truehd"), ao_labels[0])
+        self.audio_only_menu = ctk.CTkOptionMenu(
+            self.audio_row, values=ao_labels, width=220, fg_color=CARD, command=self._on_audio_only_filter_change,
+        )
+        self.audio_only_menu.set(ao_cur)
+        self.audio_only_menu.pack(side="left")
+        self._apply_audio_only_ui()
         self.scan_progress = ctk.CTkProgressBar(top, progress_color=ACCENT, height=12)
         self.scan_progress.pack(fill="x", padx=16, pady=(4, 2))
         self.scan_progress.set(0)
@@ -439,6 +464,55 @@ class App(ctk.CTk):
         self.results = self.results_list.frame
         if self.videos:
             self._render_results()
+
+    def _audio_only_codecs(self):
+        """Codecs audio à lister / convertir selon le filtre choisi (ex. {"truehd"})."""
+        key = self.settings.get("audio_only_filter", "truehd")
+        return set(AUDIO_ONLY_CODECS.get(key, {"truehd"}))
+
+    def _apply_audio_only_ui(self):
+        """Case cochée : la ligne « Ne pas lister… » est grisée (sauf la case) et
+        la ligne d'optimisation audio apparaît dessous. Décochée : retour normal."""
+        try:
+            if self.audio_only:
+                self.lbl_min_keep.configure(text_color="#555555")
+                self.min_keep_menu.configure(state="disabled")
+                self.audio_row.pack(fill="x", padx=12, pady=(0, 6), after=self.filt_frame)
+            else:
+                self.lbl_min_keep.configure(text_color=MUTED)
+                self.min_keep_menu.configure(state="normal")
+                self.audio_row.pack_forget()
+        except Exception:
+            pass
+
+    def _on_audio_only_toggle(self):
+        self.audio_only = bool(self.audio_only_var.get())
+        self._apply_audio_only_ui()
+        # La liste et la file dépendent du mode : on repart d'une liste vide.
+        # Les jobs en attente créés dans l'autre mode sont retirés (jamais ceux en cours).
+        stale = [j for j in self.queue if j.status == "pending" and bool(getattr(j, "audio_only", False)) != self.audio_only]
+        if stale:
+            self.queue = [j for j in self.queue if j not in stale]
+            self._update_queue_badge()
+            self._log(f"{len(stale)} fichier(s) en attente retire(s) de la file (changement de mode).")
+        self.videos = []
+        self.selected = {}
+        self.codec_choice = {}
+        self._render_results()
+        if self.audio_only:
+            msg = "Mode Audio seul : relancez le scan pour lister les fichiers TrueHD."
+        else:
+            msg = "Mode normal : relancez le scan."
+        try:
+            self.scan_status.configure(text=msg)
+        except Exception:
+            pass
+        self._log(msg)
+
+    def _on_audio_only_filter_change(self, label: str):
+        key = self._audio_only_label_to_key.get(label, "truehd")
+        self.settings["audio_only_filter"] = key
+        save_settings(self.settings)
 
     def _on_min_keep_change(self, label: str):
         key = self._min_keep_label_to_key.get(label, "h264")
@@ -460,6 +534,7 @@ class App(ctk.CTk):
         self._log("Scan des bibliotheques…")
         preferred = self.settings.get("preferred_codec", "hevc")
         min_keep = self.settings.get("min_keep_codec", "h264")
+        audio_codecs = self._audio_only_codecs() if self.audio_only else None
         def on_progress(done, total, msg):
             def ui():
                 try:
@@ -471,7 +546,10 @@ class App(ctk.CTk):
             self._ui(ui)
         def work():
             try:
-                videos = self.plex.scan_libraries(preferred_codec=preferred, min_keep_codec=min_keep, progress_cb=on_progress)
+                videos = self.plex.scan_libraries(
+                    preferred_codec=preferred, min_keep_codec=min_keep, progress_cb=on_progress,
+                    audio_only_codecs=audio_codecs,
+                )
                 self._ui(self._on_scan_done, videos)
             except Exception as e:
                 self._ui(self.scan_status.configure, text=f"Erreur: {e}")
@@ -484,7 +562,10 @@ class App(ctk.CTk):
         valid = {f"{v.rating_key}|{v.file_path}" for v in videos}
         self.selected = {k: v for k, v in self.selected.items() if k in valid}
         self.codec_choice = {k: v for k, v in self.codec_choice.items() if k in valid}
-        self.scan_status.configure(text=f"{len(videos)} fichier(s) a optimiser.")
+        if self.audio_only:
+            self.scan_status.configure(text=f"{len(videos)} fichier(s) avec audio TrueHD a convertir en {AUDIO_ONLY_TARGET.upper()}.")
+        else:
+            self.scan_status.configure(text=f"{len(videos)} fichier(s) a optimiser.")
         self._log(f"Scan termine: {len(videos)} fichier(s).")
         if videos and not (self.settings.get("plex_prefix") or "").strip():
             pref = common_path_prefix([v.file_path for v in videos if v.file_path])
@@ -654,6 +735,9 @@ class App(ctk.CTk):
         alias = {"hevc": "h265", "h264": "avc"}.get(new_codec, new_codec)
         new_cont = (job.container or "mp4").lower()
         new_label = f"{new_codec}/{alias}/{new_cont}"
+        if getattr(job, "audio_only", False):
+            old_label = f"{(getattr(job, 'source_audio_codec', '') or '?').lower()}/{old_cont or '?'}"
+            new_label = f"audio>{AUDIO_ONLY_TARGET}/{new_cont}"
 
         frac = max(0.0, min(1.0, (job.progress or 0) / 100.0))
         if job.status == "done":
@@ -674,7 +758,7 @@ class App(ctk.CTk):
         prog.pack(side="left", padx=6)
 
         new_color = ACCENT if job.status in ("running", "done", "pending") else MUTED
-        ctk.CTkLabel(row, text=new_label, width=110, anchor="w", text_color=new_color).pack(
+        ctk.CTkLabel(row, text=new_label, width=130 if getattr(job, "audio_only", False) else 110, anchor="w", text_color=new_color).pack(
             side="left", padx=(2, 4)
         )
 
@@ -779,7 +863,7 @@ class App(ctk.CTk):
                             except Exception as ex:
                                 self._ui(self._log, f"Plex refresh: {ex}")
                         self._ui(self._log, f"Remplace: {Path(job.video_path).name}")
-                    self.history.append({"time": datetime.now().isoformat(), "file": job.video_path, "codec": job.codec, "status": job.status, "original_size": job.original_size, "output_size": job.output_size, "duration_s": job.end_time - job.start_time})
+                    self.history.append({"time": datetime.now().isoformat(), "file": job.video_path, "codec": (f"audio:{AUDIO_ONLY_TARGET}" if getattr(job, "audio_only", False) else job.codec), "status": job.status, "original_size": job.original_size, "output_size": job.output_size, "duration_s": job.end_time - job.start_time})
                     save_history(self.history)
                 self._ui(self._render_queue)
             self.queue_running = False

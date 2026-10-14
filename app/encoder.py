@@ -11,8 +11,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, List
 
-from .config import SUPPORTED_CODECS, get_app_dir, is_audio_safe_for_plex
+from .config import SUPPORTED_CODECS, AUDIO_ONLY_TARGET, get_app_dir, is_audio_safe_for_plex
 from .logger import log
+
+
+class NoAudioToConvert(Exception):
+    """Mode « Audio seul » : le fichier ne contient aucune piste à convertir."""
+
+
+_AUDIO_STREAM_RE = re.compile(
+    r"Stream #0:(\d+)(?:\[[^\]]*\])?(?:\([^)]*\))?[^:\n]*: Audio: ([A-Za-z0-9_]+)([^\n]*)"
+)
+
+
+def _channels_from_layout(layout: str) -> int:
+    """Nombre de canaux à partir de la description ffmpeg (« 5.1(side) », « stereo »…)."""
+    low = (layout or "").strip().lower()
+    m = re.match(r"(\d+) channels", low)
+    if m:
+        return int(m.group(1))
+    if low.startswith("mono"):
+        return 1
+    if low.startswith("stereo"):
+        return 2
+    if low.startswith("quad"):
+        return 4
+    m = re.match(r"(\d+)\.(\d+)", low)
+    if m:
+        return int(m.group(1)) + int(m.group(2))
+    return 2
 
 
 @dataclass
@@ -31,6 +58,9 @@ class EncodeJob:
     source_audio_codec: str = ""
     source_container: str = ""
     audio_mode: str = ""
+    # Mode « Audio seul » : image/sous-titres recopiés, seul l'audio listé est converti
+    audio_only: bool = False
+    audio_convert_codecs: tuple = ("truehd",)
     progress: float = 0.0
     status: str = "pending"
     message: str = ""
@@ -90,7 +120,67 @@ class Encoder:
             log(f"Detection hardware: {e}", level="WARN")
         return "none"
 
+    def probe_audio_streams(self, path: str) -> List[tuple]:
+        """Retourne [(codec, nb_canaux), ...] des pistes audio, dans l'ordre du
+        fichier (l'indice dans la liste = indice audio ffmpeg « a:N »).
+        Utilise uniquement ffmpeg (ffprobe n'est pas embarqué)."""
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore
+        try:
+            proc = subprocess.run(
+                [self.ffmpeg_path, "-hide_banner", "-i", path],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=60, creationflags=creationflags,
+            )
+        except Exception as e:
+            log(f"Sonde audio impossible: {e}", level="WARN")
+            return []
+        streams: List[tuple] = []
+        for line in (proc.stderr or "").splitlines():
+            m = _AUDIO_STREAM_RE.search(line)
+            if not m:
+                continue
+            codec = m.group(2).lower()
+            rest = m.group(3)
+            m2 = re.search(r"(\d+) Hz, ([^,]+)", rest)
+            channels = _channels_from_layout(m2.group(2)) if m2 else 2
+            streams.append((codec, channels))
+        return streams
+
+    def _build_audio_only_command(self, job: EncodeJob) -> List[str]:
+        """Conversion de l'AUDIO uniquement : vidéo, sous-titres, chapitres et
+        métadonnées sont recopiés sans réencodage (la synchronisation voix/image
+        n'est donc jamais touchée). Seules les pistes dont le codec figure dans
+        job.audio_convert_codecs sont converties (AC3) ; les autres sont recopiées."""
+        streams = self.probe_audio_streams(job.video_path)
+        to_convert = [i for i, (c, _) in enumerate(streams) if c in job.audio_convert_codecs]
+        if not to_convert:
+            raise NoAudioToConvert(
+                "Aucune piste à convertir dans ce fichier "
+                f"(audio détecté : {', '.join(c for c, _ in streams) or 'inconnu'})."
+            )
+        cmd = [self.ffmpeg_path, "-y", "-hide_banner", "-i", job.video_path]
+        if job.container == "mp4":
+            cmd += ["-map", "0:v", "-map", "0:a", "-map", "0:s?"]
+        else:
+            cmd += ["-map", "0"]
+        cmd += ["-map_metadata", "0", "-map_chapters", "0", "-c", "copy"]
+        if job.container == "mp4":
+            cmd += ["-c:s", "mov_text"]
+        for i in to_convert:
+            channels = streams[i][1]
+            cmd += [f"-c:a:{i}", AUDIO_ONLY_TARGET]
+            if channels > 6:  # l'AC3 est limité à 5.1
+                cmd += [f"-ac:a:{i}", "6"]
+            cmd += [f"-b:a:{i}", "640k" if channels > 2 else "448k"]
+        cmd += ["-progress", "pipe:1", "-nostats", job.output_path]
+        job.audio_mode = AUDIO_ONLY_TARGET
+        return cmd
+
     def build_command(self, job: EncodeJob) -> List[str]:
+        if job.audio_only:
+            return self._build_audio_only_command(job)
         codec_info = SUPPORTED_CODECS.get(job.codec, SUPPORTED_CODECS["hevc"])
         vcodec = codec_info["ffmpeg_v"]
         acodec = codec_info["ffmpeg_a"]
@@ -162,7 +252,16 @@ class Encoder:
                 progress_cb(100.0, job.message)
             return job
         Path(job.output_path).parent.mkdir(parents=True, exist_ok=True)
-        cmd = self.build_command(job)
+        try:
+            cmd = self.build_command(job)
+        except NoAudioToConvert as e:
+            job.status = "error"
+            job.message = str(e)
+            job.end_time = time.time()
+            log(job.message, level="WARN")
+            if progress_cb:
+                progress_cb(0.0, job.message)
+            return job
         log(f"  audio_mode={job.audio_mode}")
         log(f"  cmd: {' '.join(cmd)}")
         ffmpeg_tail: List[str] = []

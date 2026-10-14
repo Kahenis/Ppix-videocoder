@@ -10,7 +10,7 @@ from typing import Dict, List, Callable, Any, Optional, Tuple
 
 import customtkinter as ctk
 
-from .config import CODEC_CHOICE_LABELS
+from .config import CODEC_CHOICE_LABELS, AUDIO_ONLY_TARGET
 from .plex_client import VideoInfo
 
 ACCENT = "#E5A00D"
@@ -278,10 +278,16 @@ class ResultsList:
             row, text=(v.display_title or "")[:58], anchor="w", width=280, text_color=TEXT,
         ).pack(side="left", padx=4)
 
-        rec = CODEC_CHOICE_LABELS.get(v.recommended_codec, v.recommended_codec or "")
-        ctk.CTkLabel(row, text=f"{v.video_codec} → {rec}", text_color=WARN, width=170).pack(
-            side="left", padx=4
-        )
+        audio_only = bool(getattr(self.app, "audio_only", False))
+        if audio_only:
+            ctk.CTkLabel(
+                row, text=f"audio {v.audio_codec or '?'} → {AUDIO_ONLY_TARGET}", text_color=WARN, width=170
+            ).pack(side="left", padx=4)
+        else:
+            rec = CODEC_CHOICE_LABELS.get(v.recommended_codec, v.recommended_codec or "")
+            ctk.CTkLabel(row, text=f"{v.video_codec} → {rec}", text_color=WARN, width=170).pack(
+                side="left", padx=4
+            )
         ctk.CTkLabel(
             row,
             text=f"{v.width}x{v.height} · {v.size_gb:.2f} Go · {v.duration_str}",
@@ -296,6 +302,9 @@ class ResultsList:
             row, text=CODEC_CHOICE_LABELS[cur], width=110, height=26,
             fg_color="#333", hover_color="#444",
         )
+        if audio_only:
+            # Pas de choix de codec vidéo : l'image n'est pas touchée
+            btn.configure(text="Audio seul", state="disabled")
 
         def cycle(k=key, b=btn):
             order = list(CODEC_CHOICE_LABELS.keys())

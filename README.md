@@ -42,6 +42,7 @@ Les réglages (token, chemins réseau, historique) sont conservés entre les ver
 | Scan | Films + séries, pagination (grandes bibliothèques 7k+) |
 | Codecs | H.265 (recommandé) ou H.264 — CPU / NVIDIA |
 | Conteneurs | Conservation mkv→mkv, mp4→mp4 ; legacy → mkv |
+| Audio seul | Case « Audio seul » (onglet Scanner) : liste les fichiers dont l'audio est en **TrueHD** et convertit uniquement l'audio en **AC3** ; image, sous-titres et chapitres recopiés sans réencodage (synchronisation conservée) |
 | File | Cases à cocher → file ; progression sans clignotement |
 | Plex | Analyse forcée après remplacement (codec à jour) |
 | NAS | Racine réseau Windows + autodétection API |

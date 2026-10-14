@@ -141,6 +141,27 @@ def make_job_for_video(app, v: VideoInfo) -> Optional[EncodeJob]:
     cont = resolve_output_container(src_cont, app.settings)
     out_ext = ".mkv" if cont == "mkv" else ".mp4"
     out_path = str(Path(src_for_encode).with_suffix(f".optimized{out_ext}"))
+    if getattr(app, "audio_only", False):
+        # Mode « Audio seul » : l'image n'est pas réencodée, seul l'audio du
+        # filtre (TrueHD) est converti en AC3 ; vidéo/sous-titres recopiés.
+        if cont not in ("mkv", "mp4"):
+            cont = "mkv"
+        out_ext = ".mkv" if cont == "mkv" else ".mp4"
+        out_path = str(Path(src_for_encode).with_suffix(f".optimized{out_ext}"))
+        job = EncodeJob(
+            video_path=src_for_encode,
+            output_path=out_path,
+            codec=codec,
+            container=cont,
+            dry_run=bool(app.settings.get("dry_run", False)),
+            source_audio_codec=v.audio_codec or "",
+            source_container=src_cont,
+            audio_only=True,
+            audio_convert_codecs=tuple(sorted(app._audio_only_codecs())),
+        )
+        job._video_info = v  # type: ignore
+        job._plex_path = v.file_path  # type: ignore
+        return job
     keep_copy = bool(app.settings.get("keep_audio_copy", False))
     if keep_copy and not is_audio_safe_for_plex(v.audio_codec):
         app._log(
