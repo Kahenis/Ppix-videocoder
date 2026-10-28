@@ -310,11 +310,13 @@ def test_hdr_source_forces_hevc(tmp_path):
     src = make_video(tmp_path / "Hdr10.mkv", vcodec="libx265", pix_fmt="yuv420p10le",
                      extra=["-color_trc", "smpte2084", "-color_primaries", "bt2020", "-colorspace", "bt2020nc",
                             "-x265-params", "log-level=error"])
+    sv = streams(src, "video")[0]
+    src_tags = {k: sv.get(k) for k in ("pix_fmt", "color_transfer", "color_primaries", "color_space")}
     job = _job(src, preferred_codec="h264")
     Encoder().encode(job)
     assert job.status == "done", job.message
     v = streams(job.output_path, "video")[0]
-    assert v["codec_name"] == "hevc" and v["pix_fmt"] == "yuv420p10le"
+    assert v["codec_name"] == "hevc" and v["pix_fmt"] == "yuv420p10le", (src_tags, job.plan)
     assert v.get("color_transfer") == "smpte2084"
     assert any("HDR" in p for p in job.plan)
 

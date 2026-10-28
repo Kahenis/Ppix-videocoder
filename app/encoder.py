@@ -108,6 +108,15 @@ def _popen_flags(low_priority: bool = False) -> int:
     return flags
 
 
+def is_hdr_stream(v: Dict[str, Any]) -> bool:
+    """HDR10/HLG : courbe PQ/HLG, ou BT.2020 en 10 bits (étiquette de courbe parfois absente)."""
+    if (v.get("color_transfer") or "") in HDR_TRANSFERS:
+        return True
+    pix = (v.get("pix_fmt") or "").lower()
+    ten = any(t in pix for t in ("10le", "10be", "12le", "12be", "p010"))
+    return ten and (v.get("color_primaries") or "") == "bt2020"
+
+
 def video_fps(v0: Dict[str, Any]) -> float:
     for key in ("avg_frame_rate", "r_frame_rate"):
         val = str(v0.get(key) or "")
@@ -287,8 +296,7 @@ class Encoder:
         plan: List[str] = []
         _v = next((s for s in streams if s.get("codec_type") == "video"
                    and not (s.get("disposition") or {}).get("attached_pic")), {})
-        if (not job.audio_only and job.codec != "hevc"
-                and (_v.get("color_transfer") or "") in HDR_TRANSFERS):
+        if not job.audio_only and job.codec != "hevc" and is_hdr_stream(_v):
             # H.264 ne garde pas le HDR : l'image serait affichée trop sombre → H.265 imposé
             job.codec = "hevc"
             plan.append("source HDR : H.265 imposé pour conserver le HDR (H.264 l'assombrirait)")
@@ -368,7 +376,7 @@ class Encoder:
                     is_hevc: bool, mp4: bool, codec_info: Dict[str, str]) -> str:
         pix_src = (v0.get("pix_fmt") or "").lower()
         ten_bit = any(t in pix_src for t in ("10le", "10be", "12le", "12be", "p010"))
-        hdr = (v0.get("color_transfer") or "") in HDR_TRANSFERS
+        hdr = is_hdr_stream(v0)
         vfilters: List[str] = []
         if job.deinterlace and (v0.get("field_order") or "") in INTERLACED_ORDERS:
             vfilters.append("bwdif=mode=send_frame:deint=interlaced")
