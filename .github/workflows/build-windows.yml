@@ -73,7 +73,15 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "$PWD\ffmpeg;$env:PATH"
-          python -m pytest -q tests --ignore=tests/test_gui_workflow.py
+          python -m pytest -q --tb=short -p no:cacheprovider tests --ignore=tests/test_gui_workflow.py *> pytest.txt
+          $code = $LASTEXITCODE
+          Get-Content pytest.txt
+          if ($code -ne 0) {
+            $lines = Get-Content pytest.txt | Where-Object { $_ -match '^(E |FAILED|ERROR|_{3,}|.*\.py:\d+)' } | Select-Object -First 80
+            $msg = ($lines -join '%0A') -replace '::', ': :'
+            Write-Host "::error title=pytest::$msg"
+            exit $code
+          }
 
       - name: Build with PyInstaller (one-folder, FFmpeg bundled)
         shell: pwsh
