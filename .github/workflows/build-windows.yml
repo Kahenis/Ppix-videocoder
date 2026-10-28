@@ -73,9 +73,11 @@ jobs:
         shell: pwsh
         run: |
           $env:PATH = "$PWD\ffmpeg;$env:PATH"
-          python -m pytest -q --tb=short -p no:cacheprovider tests --ignore=tests/test_gui_workflow.py *> pytest.txt
+          python -m pytest -q -rs --tb=short -p no:cacheprovider tests --ignore=tests/test_gui_workflow.py *> pytest.txt
           $code = $LASTEXITCODE
           Get-Content pytest.txt
+          $summary = (Get-Content pytest.txt | Where-Object { $_ -match '(passed|failed|SKIPPED)' }) -join '%0A'
+          Write-Host "::notice title=pytest::$summary"
           if ($code -ne 0) {
             $lines = Get-Content pytest.txt | Where-Object { $_ -match '^(E |FAILED|ERROR|_{3,}|.*\.py:\d+)' } | Select-Object -First 80
             $msg = ($lines -join '%0A') -replace '::', ': :'
