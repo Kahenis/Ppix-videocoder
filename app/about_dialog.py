@@ -31,9 +31,10 @@ def show_about(parent) -> None:
         "Fonctions principales :\n"
         "• Connexion Plex via code PIN (plex.tv/link)\n"
         "• Scan Films et Séries (groupement par série)\n"
-        "• File d'attente avec progression et arrêt\n"
-        "• Accélération NVIDIA / Intel / AMD ou CPU\n"
-        "• Remplacement optionnel du fichier d'origine\n\n"
+        "• Toutes les pistes audio et sous-titres conservées\n"
+        "• Accélération NVIDIA / Intel / AMD avec repli processeur\n"
+        "• Vérification du fichier encodé avant remplacement\n"
+        "• Remplacement, conservation des deux ou rejet, au choix\n\n"
         "Adresse de contact de l'auteur : jfrancois@guilard.com"
     )
     body = ctk.CTkTextbox(box, wrap="word", fg_color=PANEL, text_color=TEXT)

@@ -54,7 +54,7 @@ class ResultsList:
 
         # Scrollable area for the current page only
         self.frame = ctk.CTkScrollableFrame(
-            self.outer, fg_color="#1E1E1E", corner_radius=8, label_text="Fichiers a optimiser"
+            self.outer, fg_color="#1E1E1E", corner_radius=8, label_text="Fichiers à optimiser"
         )
         self.frame.pack(fill="both", expand=True, padx=4, pady=4)
 
@@ -68,6 +68,7 @@ class ResultsList:
         self._on_plex = None
         self._on_status: Optional[Callable[[str], None]] = None
         self._on_select: Optional[Callable[[VideoInfo, bool], None]] = None
+        self._on_codec: Optional[Callable[[VideoInfo, str], None]] = None
         self._videos: List[VideoInfo] = []
 
     def winfo_exists(self) -> bool:
@@ -93,6 +94,7 @@ class ResultsList:
         on_folder,
         on_plex,
         on_select: Optional[Callable[[VideoInfo, bool], None]] = None,
+        on_codec: Optional[Callable[[VideoInfo, str], None]] = None,
     ) -> None:
         """Prepare data and show page 0. Heavy sorting is deferred one tick
         so the status message can paint first."""
@@ -104,16 +106,17 @@ class ResultsList:
         self._on_plex = on_plex
         self._on_status = on_status
         self._on_select = on_select
+        self._on_codec = on_codec
         self._videos = videos
         self._page = 0
         self.clear()
         self._items = []
 
         if not videos:
-            ctk.CTkLabel(self.frame, text="Aucun fichier a afficher.", text_color=MUTED).pack(pady=20)
+            ctk.CTkLabel(self.frame, text="Aucun fichier à afficher.", text_color=MUTED).pack(pady=20)
             self._update_nav()
             try:
-                on_status("Aucun fichier a optimiser.")
+                on_status("Aucun fichier à optimiser.")
             except Exception:
                 pass
             return
@@ -240,7 +243,7 @@ class ResultsList:
         try:
             if self._on_status:
                 self._on_status(
-                    f"{len(self._videos)} fichier(s) a optimiser — page {self._page + 1}/{self._page_count()}"
+                    f"{len(self._videos)} fichier(s) à optimiser — page {self._page + 1}/{self._page_count()}"
                 )
         except Exception:
             pass
@@ -248,7 +251,7 @@ class ResultsList:
     def _row(self, v: VideoInfo) -> None:
         selected = self._selected
         codec_choice = self._codec_choice
-        key = f"{v.rating_key}|{v.file_path}"
+        key = v.key
         if key not in selected:
             selected[key] = False
         if key not in codec_choice:
@@ -278,15 +281,16 @@ class ResultsList:
             row, text=(v.display_title or "")[:58], anchor="w", width=280, text_color=TEXT,
         ).pack(side="left", padx=4)
 
-        rec = CODEC_CHOICE_LABELS.get(v.recommended_codec, v.recommended_codec or "")
-        ctk.CTkLabel(row, text=f"{v.video_codec} → {rec}", text_color=WARN, width=170).pack(
-            side="left", padx=4
-        )
+        cont = (v.container or "?").upper()
+        extra = f" · {v.bitrate / 1000:.0f} Mb/s" if v.reason == "débit élevé" and v.bitrate else ""
+        ctk.CTkLabel(row, text=f"{v.video_codec or '?'} / {cont}{extra}", text_color=WARN, width=150,
+                     anchor="w").pack(side="left", padx=4)
         ctk.CTkLabel(
             row,
-            text=f"{v.width}x{v.height} · {v.size_gb:.2f} Go · {v.duration_str}",
+            text=f"{v.resolution_label} · {v.size_label} · {v.duration_str}",
             text_color=MUTED,
-            width=150,
+            width=170,
+            anchor="w",
         ).pack(side="left", padx=4)
 
         cur = codec_choice.get(key, "hevc")
@@ -297,7 +301,7 @@ class ResultsList:
             fg_color="#333", hover_color="#444",
         )
 
-        def cycle(k=key, b=btn):
+        def cycle(k=key, b=btn, video_for_cycle=v):
             order = list(CODEC_CHOICE_LABELS.keys())
             c0 = codec_choice.get(k, "hevc")
             try:
@@ -306,6 +310,11 @@ class ResultsList:
                 n = order[0]
             codec_choice[k] = n
             b.configure(text=CODEC_CHOICE_LABELS[n])
+            if self._on_codec:
+                try:
+                    self._on_codec(video_for_cycle, n)
+                except Exception:
+                    pass
 
         btn.configure(command=cycle)
         btn.pack(side="left", padx=4)
@@ -322,7 +331,7 @@ class ResultsList:
     def select_all(self, videos, selected, value: bool) -> None:
         """Select / deselect the entire result set (all pages)."""
         for v in videos:
-            k = f"{v.rating_key}|{v.file_path}"
+            k = v.key
             was = bool(selected.get(k, False))
             selected[k] = value
             if was != value and self._on_select:
@@ -333,6 +342,13 @@ class ResultsList:
         # Update visible checkboxes only
         for k, var in self.row_vars.items():
             try:
-                var.set(value)
+                var.set(bool(selected.get(k, False)))
+            except Exception:
+                pass
+
+    def refresh_checks(self) -> None:
+        for k, var in self.row_vars.items():
+            try:
+                var.set(bool(self._selected.get(k, False)))
             except Exception:
                 pass
