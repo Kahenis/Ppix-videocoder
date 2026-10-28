@@ -62,11 +62,14 @@ def make_video(path: Path, *, vcodec="mpeg4", size="320x240", dur=3, audio=(("mp
     if pix_fmt:
         cmd += ["-pix_fmt", pix_fmt]
     if interlaced:
-        cmd += ["-flags", "+ilme+ildct", "-top", "1"]
+        cmd += ["-vf", "setfield=tff", "-flags", "+ilme+ildct"]
     for i, (ac, ch, lang) in enumerate(audio):
         cmd += [f"-c:a:{i}", ac, f"-ac:a:{i}", str(ch), f"-metadata:s:a:{i}", f"language={lang}"]
     cmd += list(extra) + [str(path)]
-    subprocess.run(cmd, check=True)
+    cmd[2] = "warning"
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("Génération du fichier de test impossible : " + proc.stderr.strip().replace("\n", " | "))
     if srt:
         srt.unlink()
     return path
