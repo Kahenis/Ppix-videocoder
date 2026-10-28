@@ -50,6 +50,8 @@ Les réglages (token, chemins réseau, historique) sont conservés entre les ver
 | Plex | Analyse ou scan du dossier après remplacement |
 | NAS | Racine réseau Windows + autodétection API + test d'accès |
 | Audio seule | Case « Audio seule (TrueHD → AC3) » : liste les fichiers TrueHD, vidéo copiée sans réencodage, TrueHD remplacé par AC3 5.1 640k |
+| Images-clés | Une image-clé toutes les 2 s (vignettes Plex correctes, avance rapide fluide, ExoPlayer), contrôlée avant remplacement |
+| Vidéos perso | Affiche Plex créée à partir d'une vraie image de la vidéo ; outil « Fichiers déjà convertis » pour réparer les affiches noires et réencoder les anciens fichiers |
 | Suivi | Pendant l'encodage : qui travaille (carte graphique et moteur NVENC/Quick Sync/AMF, ou processeur), % CPU total et de l'encodage, % GPU et de l'encodeur vidéo |
 | Confort | Priorité basse, PC maintenu éveillé, arrêt du PC en fin de file (option) |
 
@@ -71,6 +73,9 @@ Astuce : activez le *mode essai* dans les paramètres pour une simulation sans �
 
 Nouvelles fonctions :
 - Mode « Audio seule » : conversion TrueHD → AC3 5.1 640k en quelques minutes, sans toucher à la vidéo (l'Atmos éventuel est perdu, comme pour toute conversion AC3).
+- Vignettes noires dans Plex corrigées : image-clé toutes les 2 s, fichier de travail dans un dossier `.ppix-travail` ignoré par Plex, affiche des vidéos perso créée par l'application, outil de réparation des fichiers déjà convertis.
+- Contrôles avant remplacement : espacement des images-clés et absence d'images noires.
+- Source HDR : H.265 imposé (le H.264 assombrissait l'image).
 - Ligne de suivi sous le fichier en cours : matériel utilisé, % CPU (total et encodage), % GPU (global et encodeur vidéo).
 
 Corrections importantes :

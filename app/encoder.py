@@ -3,8 +3,9 @@
 Principes (v1.6) :
 - ffprobe d'abord : toutes les pistes audio et sous-titres sont conservées
   (VF/VO/sous-titres), le 5.1 reste 5.1 sauf choix « stéréo ».
-- Encodage dans un fichier temporaire caché (.ppix-tmp-…) à côté de
-  l'original, pour que Plex ne l'indexe pas pendant l'encodage.
+- Encodage dans un sous-dossier caché .ppix-travail (avec .plexignore) à
+  côté de l'original, pour que Plex ne voie jamais un fichier incomplet.
+- Une image-clé toutes les 2 s (vignettes Plex, avance rapide).
 - Validation de la sortie (durée, pistes) avant tout remplacement.
 - Remplacement avec sauvegarde temporaire et retour arrière si erreur,
   extension corrigée (film.avi → film.mkv).
@@ -29,6 +30,9 @@ from .config import (
 from .logger import log
 
 AC3_BITRATE = "640k"
+KEYFRAME_SECONDS = 2.0          # une image-clé toutes les 2 s
+KEYFRAME_MAX_GAP = 5.0          # au-delà : fichier refusé (vignettes noires, avance rapide lente)
+WORK_DIR = ".ppix-travail"      # dossier de travail ignoré par Plex (.plexignore)
 TEXT_SUBS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 BITMAP_SUBS_MKV = {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"}
 HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
@@ -104,6 +108,36 @@ def _popen_flags(low_priority: bool = False) -> int:
     return flags
 
 
+def is_hdr_stream(v: Dict[str, Any]) -> bool:
+    """HDR10/HLG : courbe PQ/HLG, ou BT.2020 en 10 bits (étiquette de courbe parfois absente)."""
+    if (v.get("color_transfer") or "") in HDR_TRANSFERS:
+        return True
+    pix = (v.get("pix_fmt") or "").lower()
+    ten = any(t in pix for t in ("10le", "10be", "12le", "12be", "p010"))
+    return ten and (v.get("color_primaries") or "") == "bt2020"
+
+
+def video_fps(v0: Dict[str, Any]) -> float:
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        val = str(v0.get(key) or "")
+        try:
+            if "/" in val:
+                num, den = val.split("/", 1)
+                fps = float(num) / float(den) if float(den) else 0.0
+            else:
+                fps = float(val or 0)
+        except ValueError:
+            fps = 0.0
+        if 1 <= fps <= 240:
+            return fps
+    return 25.0
+
+
+def keyframe_interval(v0: Dict[str, Any], seconds: float = KEYFRAME_SECONDS) -> int:
+    """Nombre d'images entre deux images-clés (≈ 2 s)."""
+    return max(12, min(240, int(round(video_fps(v0) * seconds))))
+
+
 def _fmt_duration(seconds: float) -> str:
     seconds = int(max(0, seconds))
     h, rem = divmod(seconds, 3600)
@@ -120,6 +154,38 @@ def _bitrate_k(value: str) -> int:
         return int(str(value).lower().rstrip("k"))
     except ValueError:
         return 192
+
+
+def prepare_work_dir(output_path: str) -> None:
+    """Crée le dossier de travail caché avec un .plexignore : Plex ne voit jamais
+    un fichier en cours d'écriture (sinon : vignette noire, élément fantôme)."""
+    d = Path(output_path).parent
+    if d.name != WORK_DIR:
+        return
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        ign = d / ".plexignore"
+        if not ign.exists():
+            ign.write_text("*\n", encoding="utf-8")
+        if _WIN:
+            import ctypes
+            ctypes.windll.kernel32.SetFileAttributesW(str(d), 0x02)  # type: ignore[attr-defined]
+    except Exception as e:
+        log(f"Dossier de travail {d}: {e}", level="WARN")
+
+
+def cleanup_work_dir(path_in_dir: str) -> None:
+    """Supprime le dossier de travail s'il ne contient plus que le .plexignore."""
+    d = Path(path_in_dir).parent
+    if d.name != WORK_DIR or not d.is_dir():
+        return
+    try:
+        rest = [p for p in d.iterdir() if p.name != ".plexignore"]
+        if not rest:
+            (d / ".plexignore").unlink(missing_ok=True)
+            d.rmdir()
+    except Exception as e:
+        log(f"Nettoyage {d}: {e}", level="DEBUG")
 
 
 class Encoder:
@@ -228,6 +294,12 @@ class Encoder:
         info = info or {}
         streams = info.get("streams") or []
         plan: List[str] = []
+        _v = next((s for s in streams if s.get("codec_type") == "video"
+                   and not (s.get("disposition") or {}).get("attached_pic")), {})
+        if not job.audio_only and job.codec != "hevc" and is_hdr_stream(_v):
+            # H.264 ne garde pas le HDR : l'image serait affichée trop sombre → H.265 imposé
+            job.codec = "hevc"
+            plan.append("source HDR : H.265 imposé pour conserver le HDR (H.264 l'assombrirait)")
         codec_info = SUPPORTED_CODECS.get(job.codec, SUPPORTED_CODECS["hevc"])
         hw = job.hardware if job.hardware in ("nvenc", "qsv", "amf") else "none"
         is_hevc = job.codec == "hevc"
@@ -304,7 +376,7 @@ class Encoder:
                     is_hevc: bool, mp4: bool, codec_info: Dict[str, str]) -> str:
         pix_src = (v0.get("pix_fmt") or "").lower()
         ten_bit = any(t in pix_src for t in ("10le", "10be", "12le", "12be", "p010"))
-        hdr = (v0.get("color_transfer") or "") in HDR_TRANSFERS
+        hdr = is_hdr_stream(v0)
         vfilters: List[str] = []
         if job.deinterlace and (v0.get("field_order") or "") in INTERLACED_ORDERS:
             vfilters.append("bwdif=mode=send_frame:deint=interlaced")
@@ -316,6 +388,9 @@ class Encoder:
         if vfilters:
             cmd += ["-vf", ",".join(vfilters)]
 
+        # Image-clé toutes les ~2 s : vignettes Plex, avance rapide (ExoPlayer…)
+        gop = keyframe_interval(v0)
+
         if hw == "nvenc":
             vcodec = "hevc_nvenc" if is_hevc else "h264_nvenc"
         elif hw == "qsv":
@@ -324,7 +399,7 @@ class Encoder:
             vcodec = "hevc_amf" if is_hevc else "h264_amf"
         else:
             vcodec = codec_info["ffmpeg_v"]
-        cmd += ["-c:v", vcodec]
+        cmd += ["-c:v", vcodec, "-g", str(gop)]
 
         keep_10bit = ten_bit and is_hevc
         if ten_bit and not is_hevc:
@@ -340,9 +415,10 @@ class Encoder:
             crf = q if is_hevc else max(0, q - 4)   # x264 donne une qualité équivalente ~4 points plus bas
             cmd += ["-crf", str(crf), "-preset", job.preset or "medium"]
             if is_hevc:
-                cmd += ["-x265-params", "log-level=error"]
+                # GOP fermé : chaque image-clé est un vrai point de départ (vieux décodeurs TV)
+                cmd += ["-x265-params", f"log-level=error:keyint={gop}:min-keyint={max(1, gop // 2)}:open-gop=0"]
             else:
-                cmd += ["-profile:v", "high"]
+                cmd += ["-profile:v", "high", "-keyint_min", str(max(1, gop // 2))]
         elif hw == "nvenc":
             cq = q if is_hevc else max(0, q - 2)
             cmd += ["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", str(cq),
@@ -365,7 +441,8 @@ class Encoder:
         if mp4:
             cmd += ["-tag:v", codec_info.get("tag", "")] if codec_info.get("tag") else []
         plan.insert(0, f"vidéo : {v0.get('codec_name', '?')} {w}x{h} → {vcodec}"
-                       f" ({'10' if keep_10bit else '8'} bits{', HDR' if hdr and keep_10bit else ''})")
+                       f" ({'10' if keep_10bit else '8'} bits{', HDR' if hdr and keep_10bit else ''},"
+                       f" image-clé / {gop} images)")
         return hw
 
     @staticmethod
@@ -476,6 +553,7 @@ class Encoder:
                 job.status = "simulated"
                 job.message = "Simulation : " + " · ".join(job.plan[:4])
                 return
+            prepare_work_dir(job.output_path)   # à chaque essai : un échec précédent l'a nettoyé
             if n == 0 and not self._check_space(job):
                 return
             ok = self._run_ffmpeg(job, cmd, duration, progress_cb)
@@ -493,6 +571,8 @@ class Encoder:
             return  # toutes les tentatives ont échoué (message déjà posé)
 
         # ---------------- validation ----------------
+        if progress_cb:
+            progress_cb(99.0, "Vérification du fichier encodé…")
         problem = self._validate_output(job, info, duration)
         if problem:
             job.status = "error"
@@ -639,6 +719,93 @@ class Encoder:
             tol = max(2.0, src_duration * 0.01)
             if abs(out_d - src_duration) > tol:
                 return f"durée {out_d:.0f}s au lieu de {src_duration:.0f}s"
+        if job.audio_only:
+            return ""   # vidéo copiée telle quelle : images-clés et images identiques à la source
+        dur = out_d or src_duration
+        gap = self.keyframe_max_gap(job.output_path, dur)
+        if gap is not None and gap > KEYFRAME_MAX_GAP:
+            return f"images-clés trop espacées ({gap:.0f} s) — vignettes Plex noires, avance rapide lente"
+        black = self.black_output_check(job.video_path, job.output_path, dur)
+        if black:
+            return black
+        return ""
+
+    # ------------------------------------------------------------------
+    # Contrôles d'images
+    # ------------------------------------------------------------------
+    def keyframe_times(self, path: str, read_interval: str = "") -> List[float]:
+        cmd = [self.ffprobe_path, "-v", "error", "-select_streams", "v:0",
+               "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0"]
+        if read_interval:
+            cmd += ["-read_intervals", read_interval]
+        cmd.append(path)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=600, creationflags=_popen_flags())
+        except Exception as e:
+            log(f"Lecture des images-clés impossible : {e}", level="WARN")
+            return []
+        times = []
+        for line in (proc.stdout or "").splitlines():
+            parts = line.strip().split(",")
+            if len(parts) >= 2 and "K" in parts[1]:
+                try:
+                    times.append(float(parts[0]))
+                except ValueError:
+                    pass
+        return sorted(times)
+
+    def keyframe_max_gap(self, path: str, duration: float) -> Optional[float]:
+        """Plus grand écart entre images-clés (échantillons début + milieu pour les longs fichiers).
+
+        None = mesure impossible ou fichier trop court pour être significatif.
+        """
+        if duration <= KEYFRAME_MAX_GAP + 1:
+            return None
+        windows = [(0.0, duration)] if duration <= 120 else [(0.0, 60.0), (duration / 2, 60.0)]
+        worst = 0.0
+        for start, length in windows:
+            whole = length >= duration
+            interval = "" if whole else f"{start:.0f}%+{length:.0f}"
+            times = [t for t in self.keyframe_times(path, interval) if start - 1 <= t <= start + length + 1]
+            if not times:
+                return None if whole else length
+            gaps = [b - a for a, b in zip(times, times[1:])]
+            if start == 0:
+                gaps.append(times[0])
+            if whole or start + length >= duration - 0.5:
+                gaps.append(duration - times[-1])
+            if len(times) < 2 and not whole:
+                gaps.append(length)
+            worst = max(worst, max(gaps) if gaps else 0.0)
+        return worst
+
+    def frame_luma(self, path: str, t: float) -> Optional[float]:
+        """Luminosité moyenne (0-255, noir vidéo ≈ 16) de l'image à l'instant t."""
+        cmd = [self.ffmpeg_path, "-v", "error", "-nostdin", "-ss", f"{max(0.0, t):.3f}", "-i", path,
+               "-frames:v", "1", "-vf",
+               "scale=96:-2,format=gray,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+               "-f", "null", "-"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  timeout=120, creationflags=_popen_flags())
+        except Exception:
+            return None
+        m = re.search(r"YAVG=([0-9.]+)", proc.stdout or "")
+        return float(m.group(1)) if m else None
+
+    def black_output_check(self, src: str, out: str, duration: float) -> str:
+        """Refuse un fichier encodé noir là où l'original montre une image."""
+        if duration < 2:
+            return ""
+        for frac in (0.25, 0.5, 0.75):
+            t = duration * frac
+            o = self.frame_luma(out, t)
+            if o is None or o >= 22:
+                continue
+            s = self.frame_luma(src, t)
+            if s is not None and s > 40:
+                return f"image noire à {t:.0f} s alors que l'original est visible"
         return ""
 
     def stop(self) -> None:
@@ -660,6 +827,8 @@ class Encoder:
                 os.remove(job.output_path)
                 if not quiet:
                     log(f"Fichier encodé supprimé : {job.output_path}")
+            if job.output_path:
+                cleanup_work_dir(job.output_path)
             return True
         except Exception as e:
             log(f"Suppression impossible {job.output_path}: {e}", level="WARN")
@@ -683,6 +852,7 @@ class Encoder:
             job.message = f"Renommage impossible : {e}"
             log(job.message, level="ERROR")
             return False
+        cleanup_work_dir(job.output_path)
         job.output_path = str(target)
         job.status = "kept"
         job.message = f"Les deux gardés → {target.name}"
@@ -693,7 +863,7 @@ class Encoder:
     def replace_original(job: EncodeJob, keep_backup: bool = False) -> bool:
         """Remplace l'original par le fichier encodé, avec retour arrière en cas d'erreur.
 
-        film.avi + .ppix-tmp-film.mkv → film.mkv (l'extension suit le conteneur réel).
+        film.avi + .ppix-travail/film.avi.mkv → film.mkv (l'extension suit le conteneur réel).
         """
         if job.status != "done" or not os.path.exists(job.output_path):
             job.message = "Rien à remplacer (fichier encodé absent)."
@@ -718,6 +888,7 @@ class Encoder:
             return False
         try:
             os.replace(job.output_path, final)
+            cleanup_work_dir(job.output_path)
         except Exception as e:
             try:
                 os.replace(backup, original)

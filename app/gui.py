@@ -18,7 +18,7 @@ from .about_dialog import show_about
 from .config import (
     APP_NAME, APP_VERSION, AUDIO_BITRATE_OPTIONS, AUDIO_CHANNEL_OPTIONS, CODEC_CHOICE_LABELS,
     HARDWARE_OPTIONS, HARDWARE_SHORT, HEAVY_H264_OPTIONS, MIN_KEEP_OPTIONS, PRESETS,
-    QUALITY_OPTIONS, SUPPORTED_CODECS, guess_plex_prefix, resolve_output_container, load_history, load_settings,
+    QUALITY_OPTIONS, SUPPORTED_CODECS, guess_plex_prefix, replace_extension, resolve_output_container, load_history, load_settings,
     path_exists_for_open, save_history, save_settings,
 )
 from .dialogs import ask_network_root_before_scan, confirm
@@ -29,6 +29,7 @@ from .jobs import (
 from .logger import clear_log, log, log_exception, open_log_folder, read_log
 from .plex_client import PlexClient, ScanCancelled, VideoInfo
 from .results_list import ResultsList
+from .repair import analyze_converted, fix_poster, video_info_for
 from .sysmon import LoadMonitor, cpu_name, describe_worker, format_load, gpu_names
 from .theme import (
     ACCENT, ACCENT_HOVER, BG, CARD, DANGER, DANGER_HOVER, ERR, MUTED, OK, PANEL,
@@ -789,6 +790,8 @@ class App(ctk.CTk):
                       command=lambda: self.queue.clear_finished()).pack(side="left", padx=4)
         ctk.CTkButton(row, text="Vider l'attente", width=120, fg_color="#333",
                       command=self._clear_pending).pack(side="left", padx=4)
+        ctk.CTkButton(row, text="Déjà convertis…", width=130, fg_color="#333",
+                      command=self._show_repair).pack(side="right", padx=4)
         row2 = ctk.CTkFrame(top, fg_color=PANEL)
         row2.pack(fill="x", padx=12, pady=(0, 8))
         self.queue_summary = ctk.CTkLabel(row2, text="", text_color=MUTED)
@@ -1068,6 +1071,16 @@ class App(ctk.CTk):
         self._ui(self._log, f"{job.message} ({'−' if g >= 0 else '+'}{abs(g):.0f} %)")
         self._ui(self._remove_from_scan, job.plex_path)
         self._record_history(job)
+        if self.settings.get("fix_posters", True) and self.plex.server and job.library:
+            # Vidéos perso : affiche fabriquée par l'application (Plex peut la rater)
+            new_plex = replace_extension(job.plex_path, Path(job.final_path).suffix) if job.plex_path else ""
+            final, lib, rk = job.final_path, job.library, job.rating_key
+
+            def poster():
+                msg = fix_poster(self.plex, self.encoder, final, new_plex, lib, rk, wait_s=120)
+                if msg:
+                    self._ui(self._log, f"Plex : {msg} ({Path(final).name})")
+            threading.Thread(target=poster, daemon=True).start()
 
     def _record_history(self, job: EncodeJob):
         if getattr(job, "_history_saved", False):
@@ -1079,6 +1092,9 @@ class App(ctk.CTk):
             "codec": "TrueHD→AC3" if job.audio_only else job.codec, "hw": job.hw_used, "status": job.status,
             "message": job.message, "original_size": job.original_size,
             "output_size": job.output_size, "duration_s": round(job.end_time - job.start_time, 1),
+            "plex_path": (replace_extension(job.plex_path, Path(job.final_path).suffix)
+                          if job.status == "replaced" and job.plex_path and job.final_path else job.plex_path),
+            "rating_key": job.rating_key, "library": job.library,
         })
         save_history(self.history)
 
@@ -1200,6 +1216,7 @@ class App(ctk.CTk):
         v_bak = check("Garder une copie de l'original (.ppix-bak) après remplacement", "keep_backup")
         v_bigger = check("Écarter le résultat s'il est plus gros que l'original", "skip_if_bigger")
         v_refresh = check("Mettre à jour Plex après remplacement", "refresh_plex_after", True)
+        v_posters = check("Vidéos perso : créer l'affiche Plex à partir d'une image de la vidéo", "fix_posters", True)
         v_dry = check("Mode essai (simulation, aucun fichier écrit)", "dry_run")
 
         section("Accès fichiers (NAS → Windows)")
@@ -1318,6 +1335,7 @@ class App(ctk.CTk):
             s["keep_backup"] = v_bak.get()
             s["skip_if_bigger"] = v_bigger.get()
             s["refresh_plex_after"] = v_refresh.get()
+            s["fix_posters"] = v_posters.get()
             s["dry_run"] = v_dry.get()
             new_root, new_pref = e_root.get().strip(), e_pref.get().strip()
             if new_root != s.get("network_root"):
@@ -1338,6 +1356,155 @@ class App(ctk.CTk):
         ctk.CTkButton(bottom, text="Annuler", fg_color="#333", command=d.destroy).pack(side="right")
 
     # ------------------------------------------------------------------
+    # Fichiers déjà convertis : affiches noires + réencodage (images-clés)
+    # ------------------------------------------------------------------
+    def _show_repair(self):
+        if getattr(self, "_repair_win", None) is not None and self._repair_win.winfo_exists():
+            self._repair_win.lift()
+            return
+        d = ctk.CTkToplevel(self)
+        self._repair_win = d
+        d.title("Fichiers déjà convertis")
+        d.geometry("1000x620")
+        d.configure(fg_color=BG)
+        d.transient(self)
+        d.after(150, d.lift)
+        ctk.CTkLabel(d, text="Fichiers déjà convertis", font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color=ACCENT).pack(anchor="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(d, text=("Les versions précédentes ne plaçaient pas assez d'images-clés : vignettes Plex "
+                              "noires et avance rapide lente. Cochez les fichiers marqués ⚠ puis « Réencoder », "
+                              "et/ou « Réparer les affiches » (vidéos perso)."),
+                     text_color=MUTED, wraplength=960, justify="left").pack(anchor="w", padx=16)
+        bar = ctk.CTkFrame(d, fg_color=BG)
+        bar.pack(fill="x", padx=12, pady=8)
+        status = ctk.CTkLabel(d, text="", text_color=MUTED, anchor="w")
+        prog = ctk.CTkProgressBar(d, progress_color=ACCENT, height=10)
+        lst = ctk.CTkScrollableFrame(d, fg_color=PANEL)
+        state = {"files": [], "vars": {}, "busy": False}
+        stop = threading.Event()
+        d.protocol("WM_DELETE_WINDOW", lambda: (stop.set(), d.destroy()))
+        self._repair_state = state
+
+        def render():
+            if not lst.winfo_exists():
+                return
+            for w in lst.winfo_children():
+                w.destroy()
+            state["vars"] = {}
+            if not state["files"]:
+                ctk.CTkLabel(lst, text="Aucun fichier remplacé dans l'historique.", text_color=MUTED).pack(pady=20)
+                return
+            for cf in state["files"]:
+                row = ctk.CTkFrame(lst, fg_color=CARD, corner_radius=6)
+                row.pack(fill="x", padx=6, pady=2)
+                var = ctk.BooleanVar(master=d, value=cf.needs_reencode)
+                state["vars"][cf.local_path] = var
+                ctk.CTkCheckBox(row, text="", variable=var, width=28, fg_color=ACCENT,
+                                state="normal" if cf.exists else "disabled").pack(side="left", padx=6, pady=4)
+                ctk.CTkLabel(row, text=cf.name[:60], width=380, anchor="w", text_color=TEXT).pack(side="left")
+                res = f"{cf.video_codec or '?'} {cf.height}p" if cf.height else (cf.video_codec or "?")
+                ctk.CTkLabel(row, text=res, width=100, anchor="w", text_color=MUTED).pack(side="left")
+                ctk.CTkLabel(row, text=f"images-clés : {cf.keyframe_label}", width=160, anchor="w",
+                             text_color=WARN if cf.needs_reencode else (MUTED if cf.exists else ERR)).pack(side="left")
+                plex_txt = ("Plex (perso)" if cf.personal else "Plex") if cf.in_plex else "absent de Plex"
+                ctk.CTkLabel(row, text=plex_txt, width=120, anchor="w", text_color=MUTED).pack(side="left")
+            n_bad = sum(1 for f in state["files"] if f.needs_reencode)
+            status.configure(text=f"{len(state['files'])} fichier(s) · {n_bad} avec trop peu d'images-clés")
+
+        def selected():
+            return [cf for cf in state["files"] if cf.exists and state["vars"].get(cf.local_path)
+                    and state["vars"][cf.local_path].get()]
+
+        def analyze():
+            if state["busy"]:
+                return
+            state["busy"] = True
+            status.configure(text="Analyse en cours…")
+
+            def on_prog(i, n, msg):
+                self._ui(lambda: status.winfo_exists() and (status.configure(text=msg),
+                                                             prog.set(i / n if n else 0)))
+
+            def work():
+                try:
+                    files = analyze_converted(self.plex, self.encoder, self.settings, self.history,
+                                              progress=on_prog, stop_event=stop)
+                except Exception as e:
+                    log_exception("Analyse des fichiers convertis")
+                    files = []
+                    self._ui(self._log, f"Analyse impossible : {e}", "ERROR")
+                def finish():
+                    state["files"] = files
+                    state["busy"] = False
+                    render()
+                self._ui(finish)
+            threading.Thread(target=work, daemon=True).start()
+
+        def reencode():
+            sel = selected()
+            if not sel:
+                status.configure(text="Cochez au moins un fichier.")
+                return
+            n = 0
+            for cf in sel:
+                job = make_job_for_video(video_info_for(cf), self.settings,
+                                         self.settings.get("preferred_codec", "hevc"))
+                if self.queue.add(job):
+                    n += 1
+            self._log(f"{n} fichier(s) ajouté(s) à la file pour réencodage (image-clé toutes les 2 s).")
+            status.configure(text=f"{n} fichier(s) ajouté(s) à la file — lancez l'encodage dans « 3. Encoder ».")
+
+        def posters():
+            sel = [cf for cf in selected() if cf.in_plex]
+            if not sel:
+                status.configure(text="Aucun fichier coché présent dans Plex.")
+                return
+            if state["busy"]:
+                return
+            state["busy"] = True
+
+            def work():
+                ok = 0
+                for i, cf in enumerate(sel):
+                    if stop.is_set():
+                        break
+                    self._ui(lambda c=cf, k=i: status.winfo_exists() and status.configure(
+                        text=f"Affiche {k + 1}/{len(sel)} : {c.name}…"))
+                    msg = fix_poster(self.plex, self.encoder, cf.local_path, cf.plex_path, cf.library,
+                                     cf.rating_key, only_personal=True)
+                    if msg == "affiche mise à jour":
+                        ok += 1
+                    elif msg:
+                        self._ui(self._log, f"{cf.name} : {msg}", "WARN")
+                state["busy"] = False
+                txt = (f"{ok} affiche(s) mise(s) à jour sur {len(sel)} "
+                       "(seules les bibliothèques de vidéos perso sont modifiées).")
+                self._ui(lambda: status.winfo_exists() and status.configure(text=txt))
+                self._ui(self._log, txt)
+            threading.Thread(target=work, daemon=True).start()
+
+        def toggle_flagged():
+            for cf in state["files"]:
+                v = state["vars"].get(cf.local_path)
+                if v is not None:
+                    v.set(cf.needs_reencode)
+
+        for txt, cmd, color in (("Analyser", analyze, "#333"),
+                                ("Cocher les ⚠", toggle_flagged, "#333"),
+                                ("Tout cocher", lambda: [v.set(True) for v in state["vars"].values()], "#333"),
+                                ("Réencoder la sélection", reencode, ACCENT),
+                                ("Réparer les affiches (sélection)", posters, ACCENT)):
+            ctk.CTkButton(bar, text=txt, fg_color=color, text_color="#111" if color == ACCENT else TEXT,
+                          hover_color=ACCENT_HOVER if color == ACCENT else "#444",
+                          command=cmd).pack(side="left", padx=4)
+        prog.pack(fill="x", padx=16)
+        prog.set(0)
+        status.pack(fill="x", padx=16, pady=4)
+        lst.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+        self._repair_actions = {"analyze": analyze, "reencode": reencode, "posters": posters}
+        analyze()
+
+    # ------------------------------------------------------------------
     # Historique
     # ------------------------------------------------------------------
     def _show_history(self):
@@ -1349,8 +1516,12 @@ class App(ctk.CTk):
         d.after(150, d.lift)
         replaced = [e for e in self.history if e.get("status") == "replaced"]
         saved = sum((e.get("original_size") or 0) - (e.get("output_size") or 0) for e in replaced)
-        ctk.CTkLabel(d, text=f"{len(replaced)} fichier(s) remplacé(s) au total · {_fmt_size(saved)} libérés",
-                     text_color=ACCENT, font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=16, pady=(12, 0))
+        head = ctk.CTkFrame(d, fg_color=BG)
+        head.pack(fill="x", padx=16, pady=(12, 0))
+        ctk.CTkLabel(head, text=f"{len(replaced)} fichier(s) remplacé(s) au total · {_fmt_size(saved)} libérés",
+                     text_color=ACCENT, font=ctk.CTkFont(weight="bold")).pack(side="left")
+        ctk.CTkButton(head, text="Fichiers déjà convertis…", width=190, fg_color="#333",
+                      command=lambda: (d.destroy(), self._show_repair())).pack(side="right")
         scroll = ctk.CTkScrollableFrame(d, fg_color=PANEL)
         scroll.pack(fill="both", expand=True, padx=12, pady=12)
         if not self.history:

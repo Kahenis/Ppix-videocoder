@@ -29,7 +29,7 @@ def streams(path, kind):
 def test_avi_two_audio_tracks_to_mkv_and_replace(tmp_path):
     src = make_video(tmp_path / "Film.avi", audio=(("mp3", 2, "fre"), ("mp3", 2, "eng")))
     job = _job(src)
-    assert job.output_path.endswith(".ppix-tmp-Film.avi.mkv")
+    assert job.output_path.endswith(os.path.join(".ppix-travail", "Film.avi.mkv"))
     assert job.final_path.endswith("Film.mkv")
     Encoder().encode(job)
     assert job.status == "done", job.message
@@ -180,7 +180,7 @@ def test_hw_fallback_to_cpu(tmp_path):
 
 
 def test_temp_output_windows_path():
-    assert temp_output_path(r"\\NAS\Films\A.b\Film.avi", "mkv") == r"\\NAS\Films\A.b\.ppix-tmp-Film.avi.mkv"
+    assert temp_output_path(r"\\NAS\Films\A.b\Film.avi", "mkv") == r"\\NAS\Films\A.b\.ppix-travail\Film.avi.mkv"
 
 
 def test_hw_commands_contain_quality_params():
@@ -248,3 +248,92 @@ def test_audio_only_without_truehd_is_error(tmp_path):
     Encoder().encode(job)
     assert job.status == "error" and "TrueHD" in job.message
     assert src.exists() and not os.path.exists(job.output_path)
+
+
+def _keyframes(path):
+    return Encoder().keyframe_times(str(path))
+
+
+def test_keyframe_every_two_seconds_cpu(tmp_path):
+    for codec in ("hevc", "h264"):
+        src = make_video(tmp_path / f"Gop{codec}.avi", dur=12, extra=["-g", "600"])
+        job = _job(src, preferred_codec=codec)
+        Encoder().encode(job)
+        assert job.status == "done", job.message
+        k = _keyframes(job.output_path)
+        gaps = [b - a for a, b in zip(k, k[1:])] + [12 - k[-1]]
+        assert max(gaps) <= 2.1, (codec, k)
+        assert any("image-clé / 50 images" in p for p in job.plan)
+
+
+def test_validation_rejects_sparse_keyframes(tmp_path, monkeypatch):
+    src = make_video(tmp_path / "Sparse.avi", dur=10)
+    job = _job(src, preferred_codec="h264")
+    enc = Encoder()
+    real = enc.build_command
+
+    def no_keyframes(job_, info=None):
+        cmd = real(job_, info)
+        i = cmd.index("-g")
+        cmd[i + 1] = "100000"
+        j = cmd.index("-keyint_min")
+        cmd[j + 1] = "100000"
+        return cmd[:-1] + ["-sc_threshold", "0", cmd[-1]]
+    monkeypatch.setattr(enc, "build_command", no_keyframes)
+    enc.encode(job)
+    assert job.status == "error" and "images-clés" in job.message, job.message
+    assert src.exists() and not os.path.exists(job.output_path)
+
+
+def test_validation_rejects_black_output(tmp_path, monkeypatch):
+    src = make_video(tmp_path / "Bright.avi", dur=6)
+    job = _job(src, preferred_codec="h264")
+    enc = Encoder()
+    real = enc.build_command
+
+    def black(job_, info=None):
+        cmd = real(job_, info)
+        return cmd[:-1] + ["-vf", "lutyuv=y=16:u=128:v=128", cmd[-1]]
+    monkeypatch.setattr(enc, "build_command", black)
+    enc.encode(job)
+    assert job.status == "error" and "image noire" in job.message, job.message
+
+
+def test_keyframe_gap_detects_single_keyframe_clip(tmp_path):
+    clip = make_video(tmp_path / "Clip.mp4", vcodec="libx264", dur=7, audio=(("aac", 2, "eng"),),
+                      extra=["-g", "1000", "-sc_threshold", "0"])
+    gap = Encoder().keyframe_max_gap(str(clip), 7.0)
+    assert gap is not None and gap > 5
+
+
+def test_hdr_source_forces_hevc(tmp_path):
+    src = make_video(tmp_path / "Hdr10.mkv", vcodec="libx265", pix_fmt="yuv420p10le",
+                     extra=["-color_trc", "smpte2084", "-color_primaries", "bt2020", "-colorspace", "bt2020nc",
+                            "-x265-params", "log-level=error"])
+    sv = streams(src, "video")[0]
+    src_tags = {k: sv.get(k) for k in ("pix_fmt", "color_transfer", "color_primaries", "color_space")}
+    job = _job(src, preferred_codec="h264")
+    Encoder().encode(job)
+    assert job.status == "done", job.message
+    v = streams(job.output_path, "video")[0]
+    assert v["codec_name"] == "hevc" and v["pix_fmt"] == "yuv420p10le", (src_tags, job.plan)
+    assert v.get("color_transfer") == "smpte2084"
+    assert any("HDR" in p for p in job.plan)
+
+
+def test_work_dir_has_plexignore_and_is_cleaned(tmp_path, monkeypatch):
+    src = make_video(tmp_path / "Work.mkv")
+    job = _job(src)
+    seen = {}
+    enc = Encoder()
+    real = enc._run_ffmpeg
+
+    def spy(job_, cmd, duration, cb):
+        wd = tmp_path / ".ppix-travail"
+        seen["plexignore"] = (wd / ".plexignore").read_text(encoding="utf-8")
+        return real(job_, cmd, duration, cb)
+    monkeypatch.setattr(enc, "_run_ffmpeg", spy)
+    enc.encode(job)
+    assert job.status == "done" and seen["plexignore"].strip() == "*"
+    assert Encoder.replace_original(job)
+    assert not (tmp_path / ".ppix-travail").exists()
