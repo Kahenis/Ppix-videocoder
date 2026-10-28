@@ -28,6 +28,7 @@ from .config import (
 )
 from .logger import log
 
+AC3_BITRATE = "640k"
 TEXT_SUBS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 BITMAP_SUBS_MKV = {"hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"}
 HDR_TRANSFERS = {"smpte2084", "arib-std-b67"}
@@ -53,6 +54,7 @@ class EncodeJob:
     deinterlace: bool = True
     hardware: str = "none"
     hw_fallback: bool = True
+    audio_only: bool = False            # mode « Audio seule » : TrueHD → AC3, vidéo copiée
     low_priority: bool = True
     container: str = "mp4"
     dry_run: bool = False
@@ -65,6 +67,7 @@ class EncodeJob:
     # --- état ---
     audio_mode: str = ""
     hw_used: str = ""
+    hw_requested: str = ""
     plan: List[str] = field(default_factory=list)
     progress: float = 0.0
     speed: float = 0.0
@@ -241,11 +244,14 @@ class Encoder:
                "-i", job.video_path]
 
         # ---------------- mapping ----------------
-        cmd += ["-map", f"0:{v0['index']}" if v0 else "0:v:0"]
+        if job.audio_only:
+            cmd += ["-map", "0:v?"]
+        else:
+            cmd += ["-map", f"0:{v0['index']}" if v0 else "0:v:0"]
         if audios:
             cmd += ["-map", "0:a"]
         kept_subs: List[Dict[str, Any]] = []
-        if job.keep_subtitles:
+        if job.keep_subtitles or job.audio_only:   # en mode audio seule, rien d'autre ne change
             for s in subs:
                 sc = (s.get("codec_name") or "").lower()
                 if sc in TEXT_SUBS or (not mp4 and sc in BITMAP_SUBS_MKV):
@@ -258,6 +264,44 @@ class Encoder:
         cmd += ["-map_metadata", "0", "-map_chapters", "0"]
 
         # ---------------- vidéo ----------------
+        if job.audio_only:
+            hw = "none"
+            cmd += ["-c:v", "copy"]
+            vc = (v0.get("codec_name") or "").lower()
+            if mp4 and vc == "hevc":
+                cmd += ["-tag:v", "hvc1"]
+            w, h = int(v0.get("width") or 0), int(v0.get("height") or 0)
+            plan.insert(0, f"vidéo copiée sans réencodage ({vc or '?'} {w}x{h})")
+        else:
+            hw = self._video_args(cmd, plan, job, v0, hw, is_hevc, mp4, codec_info)
+        self._audio_args(cmd, plan, job, audios, streams, mp4)
+
+        # ---------------- sous-titres ----------------
+        for i, s in enumerate(kept_subs):
+            sc = (s.get("codec_name") or "").lower()
+            if mp4:
+                cmd += [f"-c:s:{i}", "mov_text"]
+            elif sc == "mov_text":
+                cmd += [f"-c:s:{i}", "srt"]
+            else:
+                cmd += [f"-c:s:{i}", "copy"]
+        if kept_subs:
+            plan.append(f"{len(kept_subs)} sous-titre(s) conservé(s)")
+
+        # ---------------- sortie ----------------
+        cmd += ["-max_muxing_queue_size", "4096"]
+        if mp4:
+            cmd += ["-movflags", "+faststart", "-f", "mp4"]
+        else:
+            cmd += ["-f", "matroska"]
+        cmd += ["-progress", "pipe:1", "-nostats", job.output_path]
+        job.plan = plan
+        job.hw_used = hw
+        return cmd
+
+    @staticmethod
+    def _video_args(cmd: List[str], plan: List[str], job: EncodeJob, v0: Dict[str, Any], hw: str,
+                    is_hevc: bool, mp4: bool, codec_info: Dict[str, str]) -> str:
         pix_src = (v0.get("pix_fmt") or "").lower()
         ten_bit = any(t in pix_src for t in ("10le", "10be", "12le", "12be", "p010"))
         hdr = (v0.get("color_transfer") or "") in HDR_TRANSFERS
@@ -322,14 +366,30 @@ class Encoder:
             cmd += ["-tag:v", codec_info.get("tag", "")] if codec_info.get("tag") else []
         plan.insert(0, f"vidéo : {v0.get('codec_name', '?')} {w}x{h} → {vcodec}"
                        f" ({'10' if keep_10bit else '8'} bits{', HDR' if hdr and keep_10bit else ''})")
+        return hw
 
-        # ---------------- audio (chaque piste) ----------------
+    @staticmethod
+    def _audio_args(cmd: List[str], plan: List[str], job: EncodeJob, audios: List[Dict[str, Any]],
+                    streams: List[Dict[str, Any]], mp4: bool) -> None:
         modes = []
         base_k = _bitrate_k(job.audio_bitrate)
         for i, a in enumerate(audios):
             ac = (a.get("codec_name") or "").lower()
             ch = int(a.get("channels") or 2)
             lang = (a.get("tags") or {}).get("language", "")
+            if job.audio_only:
+                if ac == "truehd":
+                    out_ch = min(ch, 6)          # AC3 : 5.1 maximum (7.1 → 5.1)
+                    layout = {1: "1.0", 2: "2.0", 6: "5.1"}.get(out_ch, f"{out_ch}ch")
+                    cmd += [f"-c:a:{i}", "ac3", f"-b:a:{i}", AC3_BITRATE, f"-ac:a:{i}", str(out_ch),
+                            f"-ar:a:{i}", "48000", f"-metadata:s:a:{i}", f"title=AC3 {layout}"]
+                    modes.append("ac3")
+                    plan.append(f"audio #{i} {lang} TrueHD {ch}ch → AC3 {layout} {AC3_BITRATE}".replace("  ", " "))
+                else:
+                    cmd += [f"-c:a:{i}", "copy"]
+                    modes.append("copy")
+                    plan.append(f"audio #{i} {lang} {ac} {ch}ch → copie".replace("  ", " "))
+                continue
             want_stereo = job.audio_channels == 2 and ch > 2
             copy_ok = (job.keep_audio_copy and is_audio_safe_for_plex(ac) and not want_stereo
                        and (ac in MP4_COPY_AUDIO_CODECS if mp4 else True))
@@ -343,34 +403,11 @@ class Encoder:
                 cmd += [f"-c:a:{i}", "aac", f"-b:a:{i}", f"{kbps}k", f"-ac:a:{i}", str(out_ch)]
                 modes.append("aac")
                 plan.append(f"audio #{i} {lang or ''} {ac or '?'} {ch}ch → AAC {out_ch}ch {kbps}k".replace("  ", " "))
-        if not audios and not streams:
+        if not audios and not streams and not job.audio_only:
             # Pas de ffprobe : comportement minimal, toutes pistes audio en AAC
             cmd += ["-map", "0:a?", "-c:a", "aac", "-b:a", job.audio_bitrate]
             modes.append("aac")
         job.audio_mode = "/".join(sorted(set(modes))) or "aucun"
-
-        # ---------------- sous-titres ----------------
-        for i, s in enumerate(kept_subs):
-            sc = (s.get("codec_name") or "").lower()
-            if mp4:
-                cmd += [f"-c:s:{i}", "mov_text"]
-            elif sc == "mov_text":
-                cmd += [f"-c:s:{i}", "srt"]
-            else:
-                cmd += [f"-c:s:{i}", "copy"]
-        if kept_subs:
-            plan.append(f"{len(kept_subs)} sous-titre(s) conservé(s)")
-
-        # ---------------- sortie ----------------
-        cmd += ["-max_muxing_queue_size", "4096"]
-        if mp4:
-            cmd += ["-movflags", "+faststart", "-f", "mp4"]
-        else:
-            cmd += ["-f", "matroska"]
-        cmd += ["-progress", "pipe:1", "-nostats", job.output_path]
-        job.plan = plan
-        job.hw_used = hw
-        return cmd
 
     # ------------------------------------------------------------------
     # Encodage
@@ -417,6 +454,15 @@ class Encoder:
             job.message = "Aucune piste vidéo détectée par ffprobe (fichier corrompu ?)"
             return
 
+        if job.audio_only:
+            job.hardware = "none"
+        job.hw_requested = job.hardware
+        if job.audio_only and info and not any(
+                (s.get("codec_name") or "").lower() == "truehd"
+                for s in info.get("streams") or [] if s.get("codec_type") == "audio"):
+            job.status = "error"
+            job.message = "Aucune piste TrueHD dans ce fichier (rien à convertir)."
+            return
         attempts = [job.hardware]
         if job.hardware != "none" and job.hw_fallback:
             attempts.append("none")

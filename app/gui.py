@@ -18,7 +18,7 @@ from .about_dialog import show_about
 from .config import (
     APP_NAME, APP_VERSION, AUDIO_BITRATE_OPTIONS, AUDIO_CHANNEL_OPTIONS, CODEC_CHOICE_LABELS,
     HARDWARE_OPTIONS, HARDWARE_SHORT, HEAVY_H264_OPTIONS, MIN_KEEP_OPTIONS, PRESETS,
-    QUALITY_OPTIONS, SUPPORTED_CODECS, guess_plex_prefix, load_history, load_settings,
+    QUALITY_OPTIONS, SUPPORTED_CODECS, guess_plex_prefix, resolve_output_container, load_history, load_settings,
     path_exists_for_open, save_history, save_settings,
 )
 from .dialogs import ask_network_root_before_scan, confirm
@@ -29,6 +29,7 @@ from .jobs import (
 from .logger import clear_log, log, log_exception, open_log_folder, read_log
 from .plex_client import PlexClient, ScanCancelled, VideoInfo
 from .results_list import ResultsList
+from .sysmon import LoadMonitor, cpu_name, describe_worker, format_load, gpu_names
 from .theme import (
     ACCENT, ACCENT_HOVER, BG, CARD, DANGER, DANGER_HOVER, ERR, MUTED, OK, PANEL,
     STATUS_COLORS, STATUS_LABELS, TEXT, WARN,
@@ -88,6 +89,9 @@ class App(ctk.CTk):
         self._filter_after: Optional[str] = None
         self._shutdown_var = ctk.BooleanVar(master=self, value=False)
         self._shutdown_flag = False
+        self.monitor = LoadMonitor(interval=1.5)
+        self.cpu_name = "processeur"
+        self.gpu_list: List[str] = []
         try:
             self._build()
         except Exception:
@@ -99,6 +103,7 @@ class App(ctk.CTk):
         self.after(80, self._drain)
         self.after(300, self._try_auto_connect)
         self.after(500, self._detect_hw)
+        threading.Thread(target=self._read_hardware_names, daemon=True).start()
         self.protocol("WM_DELETE_WINDOW", self._request_close)
 
     # ------------------------------------------------------------------
@@ -426,6 +431,14 @@ class App(ctk.CTk):
                 self._ui(self._log, f"Reconnexion impossible ({self.plex.last_error}) — reconnectez-vous.")
         threading.Thread(target=work, daemon=True).start()
 
+    def _read_hardware_names(self):
+        try:
+            self.cpu_name = cpu_name()
+            self.gpu_list = gpu_names()
+            log(f"Matériel : CPU {self.cpu_name} · GPU {', '.join(self.gpu_list) or 'aucun détecté'}")
+        except Exception as e:
+            log(f"Noms du matériel : {e}", level="DEBUG")
+
     # ------------------------------------------------------------------
     # Accélération matérielle
     # ------------------------------------------------------------------
@@ -482,6 +495,11 @@ class App(ctk.CTk):
                                                command=self._on_min_keep_change)
         self.min_keep_menu.set(MIN_KEEP_OPTIONS.get(self.settings.get("min_keep_codec", "h264"), mk_labels[0]))
         self.min_keep_menu.pack(side="left")
+        self.audio_only_var = ctk.BooleanVar(master=self, value=bool(self.settings.get("audio_only_truehd")))
+        ctk.CTkCheckBox(filt, text="Audio seule (TrueHD → AC3)", variable=self.audio_only_var,
+                        fg_color=ACCENT, command=self._on_audio_only_toggle).pack(side="left", padx=(12, 0))
+        if self.audio_only_var.get():
+            self.min_keep_menu.configure(state="disabled")
         ctk.CTkLabel(filt, text="Rechercher :", text_color=MUTED).pack(side="left", padx=(16, 6))
         self.search_var = ctk.StringVar(master=self, value=getattr(self, "_search_text", ""))
         ent = ctk.CTkEntry(filt, textvariable=self.search_var, width=200, fg_color=CARD,
@@ -510,6 +528,21 @@ class App(ctk.CTk):
         if self.scan_thread and self.scan_thread.is_alive():
             self.scan_status.configure(text="Scan en cours…")
         self._update_selection_summary()
+
+    def _on_audio_only_toggle(self):
+        on = bool(self.audio_only_var.get())
+        self.settings["audio_only_truehd"] = on
+        save_settings(self.settings)
+        self.min_keep_menu.configure(state="disabled" if on else "normal")
+        # La liste précédente ne correspond plus au mode : on la vide (la file n'est pas touchée)
+        self.videos = []
+        self.selected = {k: v for k, v in self.selected.items() if v and self.queue.find_by_plex_path(k.split("|", 1)[1])}
+        self._render_results()
+        self._update_selection_summary()
+        self.scan_status.configure(text="Mode changé — relancez le scan.")
+        self._log("Mode « Audio seule » : seuls les fichiers avec une piste TrueHD seront listés ; "
+                  "la vidéo sera copiée, le TrueHD converti en AC3 640k." if on else
+                  "Mode vidéo rétabli — relancez le scan.")
 
     def _on_min_keep_change(self, label: str):
         self.settings["min_keep_codec"] = self._min_keep_label_to_key.get(label, "h264")
@@ -542,6 +575,7 @@ class App(ctk.CTk):
         preferred = self.settings.get("preferred_codec", "hevc")
         min_keep = self.settings.get("min_keep_codec", "h264")
         heavy = float(self.settings.get("heavy_h264_mbps", 0) or 0)
+        audio_only = bool(self.settings.get("audio_only_truehd"))
         t0 = time.time()
 
         def on_progress(done, total, msg):
@@ -556,6 +590,7 @@ class App(ctk.CTk):
         def work():
             try:
                 videos = self.plex.scan_libraries(preferred_codec=preferred, min_keep_codec=min_keep,
+                                                  audio_only=audio_only,
                                                   heavy_mbps=heavy, progress_cb=on_progress,
                                                   stop_event=self._scan_stop)
                 self._ui(self._on_scan_done, videos, time.time() - t0)
@@ -808,13 +843,14 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-    @staticmethod
-    def _codec_labels(job: EncodeJob):
+    def _codec_labels(self, job: EncodeJob):
         vinfo = getattr(job, "_video_info", None)
+        if job.audio_only:
+            return "audio TrueHD", "AC3 640k · vidéo copiée"
         old_codec = (getattr(vinfo, "video_codec", "") or "?").lower()
         old_cont = (job.source_container or "").lower()
         old = f"{old_codec}/{old_cont}" if old_cont else old_codec
-        new_cont = (job.container or "").lower() or "auto"
+        new_cont = job.container if job.output_path else resolve_output_container(job.source_container, self.settings)
         new = f"{CODEC_CHOICE_LABELS.get(job.codec, job.codec)} {new_cont}"
         if job.hw_used:
             new += f" · {HARDWARE_SHORT.get(job.hw_used, job.hw_used)}"
@@ -856,7 +892,21 @@ class App(ctk.CTk):
         lbl = ctk.CTkLabel(row, text=f"{status}" + (f" — {detail}" if detail else ""), anchor="w",
                            justify="left", wraplength=1050, text_color=STATUS_COLORS.get(job.status, MUTED))
         lbl.pack(fill="x", padx=10, pady=(0, 6))
-        self._queue_widgets[id(job)] = {"prog": prog, "lbl": lbl, "status": job.status}
+        lbl_load = None
+        if job.status == "running":
+            lbl.pack_configure(pady=(0, 0))
+            lbl_load = ctk.CTkLabel(row, text=self._load_text(job), anchor="w", justify="left",
+                                    wraplength=1050, text_color=MUTED)
+            lbl_load.pack(fill="x", padx=10, pady=(0, 6))
+        self._queue_widgets[id(job)] = {"prog": prog, "lbl": lbl, "load": lbl_load, "status": job.status}
+
+    def _load_text(self, job: EncodeJob) -> str:
+        """« Matériel : NVIDIA … (NVENC) · CPU 18 % (encodage 12 %) · GPU 35 % (encodeur vidéo 82 %) »"""
+        if not job.hw_used and not job.audio_only:
+            return "Préparation…"
+        who = describe_worker(job.hw_used, job.hw_requested, job.codec, job.audio_only,
+                              self.cpu_name, self.gpu_list)
+        return f"{who} · {format_load(self.monitor.latest)}"
 
     def _update_queue_job(self, job: EncodeJob) -> None:
         """Met à jour uniquement la ligne du job (pas de rebuild → pas de clignotement)."""
@@ -870,6 +920,8 @@ class App(ctk.CTk):
         try:
             w["prog"].set(max(0.0, min(1.0, (job.progress or 0) / 100.0)))
             w["lbl"].configure(text=f"{STATUS_LABELS.get(job.status, job.status)} — {job.message}")
+            if w.get("load") is not None:
+                w["load"].configure(text=self._load_text(job))
             self.queue_summary.configure(text=self._queue_summary_text())
         except Exception:
             pass
@@ -902,6 +954,7 @@ class App(ctk.CTk):
     def _queue_worker(self):
         stopped_by_user = False
         self._keep_awake(True)
+        self.monitor.start()
         try:
             while self.queue_running:
                 job = self.queue.next_pending()
@@ -915,7 +968,10 @@ class App(ctk.CTk):
                 def cb(p, msg, j=job):
                     j.progress = p
                     j.message = msg
+                    proc = j.process
+                    self.monitor.set_pid(proc.pid if proc else None)
                     self._ui(self._update_queue_job, j)
+                self.monitor.set_pid(None)
                 self.encoder.encode(job, progress_cb=cb)
                 if job.status == "cancelled":
                     stopped_by_user = True
@@ -925,6 +981,7 @@ class App(ctk.CTk):
             log_exception("Worker")
             self._ui(self._log, f"Erreur file d'attente : {e}", "ERROR")
         finally:
+            self.monitor.stop()
             self._keep_awake(False)
             self.queue_running = False
             self._ui(self._on_queue_changed)
@@ -1007,7 +1064,8 @@ class App(ctk.CTk):
                 self._ui(self._log, f"Plex : {what} pour {Path(job.final_path).name}")
             except Exception as ex:
                 self._ui(self._log, f"Plex refresh: {ex}", "WARN")
-        self._ui(self._log, f"{job.message} (−{job.gain_ratio * 100:.0f} %)")
+        g = job.gain_ratio * 100
+        self._ui(self._log, f"{job.message} ({'−' if g >= 0 else '+'}{abs(g):.0f} %)")
         self._ui(self._remove_from_scan, job.plex_path)
         self._record_history(job)
 
@@ -1018,7 +1076,7 @@ class App(ctk.CTk):
         self.history.append({
             "time": datetime.now().isoformat(timespec="seconds"),
             "file": job.final_path or job.video_path,
-            "codec": job.codec, "hw": job.hw_used, "status": job.status,
+            "codec": "TrueHD→AC3" if job.audio_only else job.codec, "hw": job.hw_used, "status": job.status,
             "message": job.message, "original_size": job.original_size,
             "output_size": job.output_size, "duration_s": round(job.end_time - job.start_time, 1),
         })

@@ -148,6 +148,53 @@ def test_full_workflow(tmp_path):
         assert not list(media.glob(".ppix-tmp-*")) and long.exists()
         assert app.queue.retry_failed() >= 1 and job.status == "pending"
 
+        # Ligne « qui travaille » + charge CPU/GPU pendant l'encodage
+        from app.sysmon import LoadSample
+        app.queue.clear_finished()
+        app.queue.remove(job)
+        job = make_job_for_video(v, app.settings)
+        app.queue.add(job)
+        app._show_page("queue")
+        app._start_queue()
+        assert pump(app, lambda: job.status == "running" and job.progress > 0, 60)
+        # mesure réelle : le % CPU de l'encodage apparaît
+        assert pump(app, lambda: "(encodage " in app._queue_widgets[id(job)]["load"].cget("text")
+                    and "CPU …" not in app._queue_widgets[id(job)]["load"].cget("text"), 30)
+        assert app._queue_widgets[id(job)]["load"].cget("text").startswith("Logiciel : processeur")
+        # valeurs GPU simulées (pas de GPU ici) : vérifie le format affiché
+        app.monitor.stop()
+        app.monitor._thread.join(5)
+        app.monitor.latest = LoadSample(90, 85, 3, 0)
+        assert pump(app, lambda: "CPU 90 % (encodage 85 %) · GPU 3 % (encodeur vidéo 0 %)" in
+                    app._queue_widgets[id(job)]["load"].cget("text"), 20)
+        app._stop_queue()
+        assert pump(app, lambda: not app._worker.is_alive(), 60)
+
+        # Mode « Audio seule » : case sur la page Scanner + conversion TrueHD → AC3
+        from tests.conftest import make_truehd, probe
+        app.settings.update(preset="medium", auto_replace=False)
+        app._show_page("scan")
+        app.audio_only_var.set(True)
+        app._on_audio_only_toggle()
+        assert app.settings["audio_only_truehd"] and app.videos == []
+        thd = make_truehd(media / "Atmos.mkv")
+        va = VideoInfo(rating_key="77", title="Atmos", library="Films", library_type="movie",
+                       file_path="/volume1/Media/Films/Atmos.mkv", container="mkv", video_codec="h264",
+                       audio_codec="truehd", reason="audio TrueHD", audio_only=True)
+        app.plex._videos = [va]
+        app._start_scan()
+        assert pump(app, lambda: bool(app.results_list.row_vars))
+        app._select_all()
+        aj = app.queue.find_by_plex_path(va.file_path)
+        assert aj is not None and aj.audio_only
+        app._show_page("queue")
+        app._start_queue()
+        assert pump(app, lambda: aj.status == "done", 120), aj.message
+        app._decide(aj, "replace")
+        assert pump(app, lambda: aj.status == "replaced")
+        codecs = [s["codec_name"] for s in probe(thd)["streams"] if s["codec_type"] == "audio"]
+        assert codecs == ["ac3", "aac"]
+
         # Dialogues : paramètres, historique, racine réseau, quitter
         app._show_settings()
         app.update()

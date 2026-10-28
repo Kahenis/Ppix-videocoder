@@ -282,6 +282,15 @@ class ResultsList:
         ).pack(side="left", padx=4)
 
         cont = (v.container or "?").upper()
+        if v.audio_only:
+            ch = f" {v.audio_channels}ch" if v.audio_channels else ""
+            ctk.CTkLabel(row, text=f"audio TrueHD{ch} / {cont}", text_color=WARN, width=150,
+                         anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text=f"{v.resolution_label} · {v.size_label} · {v.duration_str}",
+                         text_color=MUTED, width=170, anchor="w").pack(side="left", padx=4)
+            ctk.CTkLabel(row, text="→ AC3 640k", width=110, text_color=TEXT).pack(side="left", padx=4)
+            self._row_buttons(row, v)
+            return
         extra = f" · {v.bitrate / 1000:.0f} Mb/s" if v.reason == "débit élevé" and v.bitrate else ""
         ctk.CTkLabel(row, text=f"{v.video_codec or '?'} / {cont}{extra}", text_color=WARN, width=150,
                      anchor="w").pack(side="left", padx=4)
@@ -319,6 +328,9 @@ class ResultsList:
         btn.configure(command=cycle)
         btn.pack(side="left", padx=4)
 
+        self._row_buttons(row, v)
+
+    def _row_buttons(self, row, v: VideoInfo) -> None:
         ctk.CTkButton(
             row, text="Dossier", width=70, height=26, fg_color="#333",
             command=lambda p=v.file_path: self._on_folder(p) if self._on_folder else None,

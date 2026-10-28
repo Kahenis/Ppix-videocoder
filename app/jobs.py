@@ -48,6 +48,7 @@ def make_job_for_video(v: VideoInfo, settings: dict, codec: Optional[str] = None
         library=v.library,
     )
     job.original_size = v.file_size or 0
+    job.audio_only = bool(getattr(v, "audio_only", False))
     job._video_info = v  # type: ignore[attr-defined]
     return job
 

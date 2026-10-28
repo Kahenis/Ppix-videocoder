@@ -63,7 +63,7 @@ DEFAULT_SETTINGS = {
     "hardware_accel": "auto", "hw_fallback_cpu": True, "container": "mp4",
     "mkv_for_legacy": True, "dry_run": False, "refresh_plex_after": True,
     "keep_backup": False, "skip_if_bigger": False, "heavy_h264_mbps": 0,
-    "low_priority": True, "prevent_sleep": True,
+    "low_priority": True, "prevent_sleep": True, "audio_only_truehd": False,
     "network_root": "", "plex_prefix": "", "path_maps": [],
     "network_root_asked": False, "detected_hw": "",
     "server_url": "", "token": "", "token_in_keyring": False, "last_server_name": "",

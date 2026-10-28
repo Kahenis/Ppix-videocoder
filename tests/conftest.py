@@ -80,3 +80,23 @@ def probe(path):
     out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams",
                           "-show_format", str(path)], capture_output=True, text=True, check=True).stdout
     return json.loads(out)
+
+
+def make_truehd(path: Path, dur=3, subs=True):
+    """MKV H.264 + TrueHD 5.1 96 kHz (titre « Atmos ») + AAC + sous-titre."""
+    cmd = ["ffmpeg", "-v", "warning", "-y", "-f", "lavfi", "-i", f"testsrc=d={dur}:s=320x240:r=24",
+           "-f", "lavfi", "-i", f"sine=d={dur}", "-f", "lavfi", "-i", f"sine=f=500:d={dur}"]
+    if subs:
+        srt = path.with_suffix(".srt")
+        srt.write_text("1\n00:00:00,500 --> 00:00:02,000\nBonjour\n", encoding="utf-8")
+        cmd += ["-i", str(srt)]
+    cmd += ["-map", "0", "-map", "1", "-map", "2"] + (["-map", "3", "-c:s", "srt"] if subs else [])
+    cmd += ["-c:v", "libx264", "-c:a:0", "truehd", "-strict", "-2", "-ac:a:0", "6", "-ar:a:0", "96000",
+            "-metadata:s:a:0", "title=TrueHD 5.1 Atmos", "-metadata:s:a:0", "language=eng",
+            "-c:a:1", "aac", "-metadata:s:a:1", "language=fre", str(path)]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if subs:
+        path.with_suffix(".srt").unlink()
+    if proc.returncode != 0:
+        raise RuntimeError("Génération TrueHD impossible : " + proc.stderr.strip().replace("\n", " | "))
+    return path

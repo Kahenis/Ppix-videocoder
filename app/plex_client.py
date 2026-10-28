@@ -48,6 +48,7 @@ class VideoInfo:
     video_profile: str = ""
     recommended_codec: str = "hevc"
     reason: str = ""
+    audio_only: bool = False   # mode « Audio seule » : TrueHD → AC3, vidéo copiée
     part_id: str = ""
     media_id: str = ""
 
@@ -99,6 +100,10 @@ class VideoInfo:
         """Estimation grossière (pour le tri / la file) : HEVC ≈ 35-55 % d'un codec ancien."""
         if not self.file_size:
             return 0
+        if self.audio_only:
+            # TrueHD ≈ 3-5 Mb/s remplacé par 640 kb/s : ~4 Mb/s gagnés sur la durée
+            saved = 4_000_000 / 8 * (self.duration_ms or 0) / 1000
+            return max(int(self.file_size * 0.5), int(self.file_size - saved))
         vc = normalize_codec(self.video_codec)
         if vc == "h264":
             ratio = 0.55 if codec == "hevc" else 0.85
@@ -229,6 +234,7 @@ class PlexClient:
         progress_cb: Optional[Callable[[int, int, str], None]] = None,
         stop_event: Optional[threading.Event] = None,
         sections: Optional[List[str]] = None,
+        audio_only: bool = False,
     ) -> List[VideoInfo]:
         """Scan libraries by pages (films + épisodes en une requête par page).
 
@@ -278,7 +284,7 @@ class PlexClient:
                 for item in batch:
                     try:
                         self._process_media_item(item, section, preferred_codec, min_keep_codec,
-                                                 heavy_mbps, results)
+                                                 heavy_mbps, results, audio_only)
                     except Exception:
                         self.scan_errors += 1
                         log_exception(f"Scan élément {getattr(item, 'title', '?')}")
@@ -296,13 +302,17 @@ class PlexClient:
         return results
 
     def _process_media_item(self, item, section, preferred_codec: str, min_keep_codec: str,
-                            heavy_mbps: float, results: List[VideoInfo]) -> None:
+                            heavy_mbps: float, results: List[VideoInfo], audio_only: bool = False) -> None:
         medias = getattr(item, "media", None) or []
         is_show = section.type == "show"
         for media in medias:
             video_codec = (media.videoCodec or "").lower()
-            reason = optimization_reason(video_codec, media.bitrate or 0, media.width or 0,
-                                         media.height or 0, min_keep_codec, heavy_mbps)
+            if audio_only:
+                # Mode « Audio seule » : seule la piste TrueHD compte, la vidéo est ignorée
+                reason = "audio TrueHD" if (media.audioCodec or "").lower() == "truehd" else ""
+            else:
+                reason = optimization_reason(video_codec, media.bitrate or 0, media.width or 0,
+                                             media.height or 0, min_keep_codec, heavy_mbps)
             if not reason:
                 continue
             rec = preferred_codec if preferred_codec in SUPPORTED_CODECS else "hevc"
@@ -335,6 +345,7 @@ class PlexClient:
                     video_profile=media.videoProfile or "",
                     recommended_codec=rec,
                     reason=reason,
+                    audio_only=audio_only,
                     part_id=str(getattr(part, "id", "") or ""),
                     media_id=str(getattr(media, "id", "") or ""),
                 )

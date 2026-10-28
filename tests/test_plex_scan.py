@@ -57,3 +57,15 @@ def test_scan_cancel():
     client.server = NS(library=NS(sections=lambda: [FakeSection([_ep(1)])]))
     with pytest.raises(pc.ScanCancelled):
         client.scan_libraries(stop_event=ev)
+
+
+def test_scan_audio_only_truehd(monkeypatch):
+    items = [_ep(1), _ep(2, "hevc", 9000, 3840, 2160), _ep(3, "h264", 4000, 1920, 1080)]
+    items[1].media[0].audioCodec = "truehd"
+    items[2].media[0].audioCodec = "TrueHD"
+    sec = FakeSection(items)
+    client = pc.PlexClient()
+    client.server = NS(library=NS(sections=lambda: [sec]))
+    res = client.scan_libraries(audio_only=True)
+    assert [v.episode_number for v in res] == [2, 3]      # l'épisode 1 (MPEG-4, mp3) est ignoré
+    assert all(v.audio_only and v.reason == "audio TrueHD" for v in res)

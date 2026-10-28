@@ -49,6 +49,8 @@ Les réglages (token, chemins réseau, historique) sont conservés entre les ver
 | File | Validation non bloquante : Remplacer / Garder les 2 / Jeter, ordre modifiable, relance des erreurs, ETA |
 | Plex | Analyse ou scan du dossier après remplacement |
 | NAS | Racine réseau Windows + autodétection API + test d'accès |
+| Audio seule | Case « Audio seule (TrueHD → AC3) » : liste les fichiers TrueHD, vidéo copiée sans réencodage, TrueHD remplacé par AC3 5.1 640k |
+| Suivi | Pendant l'encodage : qui travaille (carte graphique et moteur NVENC/Quick Sync/AMF, ou processeur), % CPU total et de l'encodage, % GPU et de l'encodeur vidéo |
 | Confort | Priorité basse, PC maintenu éveillé, arrêt du PC en fin de file (option) |
 
 ---
@@ -66,6 +68,10 @@ Astuce : activez le *mode essai* dans les paramètres pour une simulation sans �
 ---
 
 ## Nouveautés 1.6.0
+
+Nouvelles fonctions :
+- Mode « Audio seule » : conversion TrueHD → AC3 5.1 640k en quelques minutes, sans toucher à la vidéo (l'Atmos éventuel est perdu, comme pour toute conversion AC3).
+- Ligne de suivi sous le fichier en cours : matériel utilisé, % CPU (total et encodage), % GPU (global et encodeur vidéo).
 
 Corrections importantes :
 - Les pistes audio supplémentaires (VO/VF) et les sous-titres n'étaient pas conservés : c'est corrigé.

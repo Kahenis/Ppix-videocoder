@@ -207,3 +207,44 @@ def test_same_stem_sources_do_not_share_temp(tmp_path):
     # Film.avi → Film.mkv refusé car Film.mkv existe déjà (autre fichier)
     assert not Encoder.replace_original(ja)
     assert Encoder.replace_original(jb)
+
+
+def _audio_job(src, **settings):
+    s = dict(DEFAULT_SETTINGS, hardware_accel="nvenc", keep_subtitles=False, **settings)
+    v = VideoInfo(rating_key="5", title=src.stem, library="Films", library_type="movie",
+                  file_path=str(src), container=src.suffix.lstrip("."), video_codec="h264",
+                  audio_codec="truehd", reason="audio TrueHD", audio_only=True)
+    job = make_job_for_video(v, s)
+    finalize_job_settings(job, s, "nvenc")
+    return job
+
+
+def test_audio_only_truehd_to_ac3(tmp_path):
+    from tests.conftest import make_truehd
+    src = make_truehd(tmp_path / "Movie.mkv")
+    src_video = streams(src, "video")[0]
+    job = _audio_job(src)
+    assert job.audio_only
+    Encoder().encode(job)
+    assert job.status == "done", job.message
+    assert job.hw_used == "none"                       # jamais de GPU pour l'audio
+    v = streams(job.output_path, "video")[0]
+    assert v["codec_name"] == src_video["codec_name"] and v["width"] == src_video["width"]
+    a = streams(job.output_path, "audio")
+    assert a[0]["codec_name"] == "ac3" and a[0]["channels"] == 6
+    assert int(a[0]["sample_rate"]) == 48000 and int(a[0]["bit_rate"]) == 640000
+    assert a[0]["tags"]["language"] == "eng" and a[0]["tags"]["title"] == "AC3 5.1"
+    assert a[1]["codec_name"] == "aac"                 # autre piste copiée
+    assert len(streams(job.output_path, "subtitle")) == 1   # sous-titres gardés même si l'option est décochée
+    assert any("vidéo copiée" in p for p in job.plan)
+    assert Encoder.replace_original(job)
+    assert (tmp_path / "Movie.mkv").exists() and job.final_path.endswith("Movie.mkv")
+    assert streams(tmp_path / "Movie.mkv", "audio")[0]["codec_name"] == "ac3"
+
+
+def test_audio_only_without_truehd_is_error(tmp_path):
+    src = make_video(tmp_path / "NoThd.mkv", audio=(("aac", 2, "fre"),))
+    job = _audio_job(src)
+    Encoder().encode(job)
+    assert job.status == "error" and "TrueHD" in job.message
+    assert src.exists() and not os.path.exists(job.output_path)
