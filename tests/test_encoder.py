@@ -308,8 +308,11 @@ def test_keyframe_gap_detects_single_keyframe_clip(tmp_path):
 
 def test_hdr_source_forces_hevc(tmp_path):
     src = make_video(tmp_path / "Hdr10.mkv", vcodec="libx265", pix_fmt="yuv420p10le",
-                     extra=["-color_trc", "smpte2084", "-color_primaries", "bt2020", "-colorspace", "bt2020nc",
-                            "-x265-params", "log-level=error"])
+                     extra=["-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+                            "-color_trc", "smpte2084", "-color_primaries", "bt2020", "-colorspace", "bt2020nc",
+                            # étiquettes aussi dans le flux HEVC (FFmpeg 8 ne recopie pas toujours -color_trc)
+                            "-x265-params",
+                            "log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"])
     sv = streams(src, "video")[0]
     src_tags = {k: sv.get(k) for k in ("pix_fmt", "color_transfer", "color_primaries", "color_space")}
     job = _job(src, preferred_codec="h264")
