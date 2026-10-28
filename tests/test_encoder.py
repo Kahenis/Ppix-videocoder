@@ -43,14 +43,23 @@ def test_avi_two_audio_tracks_to_mkv_and_replace(tmp_path):
     assert list(tmp_path.glob("*.ppix-bak")) == []
 
 
-def test_interlaced_51_subs_odd_size_mkv(tmp_path):
-    src = make_video(tmp_path / "Ep.mkv", vcodec="mpeg2video", size="321x241", interlaced=True,
+def test_odd_dimensions_rounded(tmp_path):
+    src = make_video(tmp_path / "Odd.mkv", vcodec="ffv1", size="321x241", pix_fmt="yuv444p")
+    job = _job(src)
+    Encoder().encode(job)
+    assert job.status == "done", job.message
+    v = streams(job.output_path, "video")[0]
+    assert (v["width"], v["height"]) == (320, 240)
+
+
+def test_interlaced_51_subs_mkv(tmp_path):
+    src = make_video(tmp_path / "Ep.mkv", vcodec="mpeg2video", size="720x576", interlaced=True,
                      audio=(("ac3", 6, "fre"), ("aac", 2, "eng")), subs=True)
     job = _job(src, preferred_codec="h264")
     Encoder().encode(job)
     assert job.status == "done", job.message
     v = streams(job.output_path, "video")[0]
-    assert v["codec_name"] == "h264" and v["width"] % 2 == 0
+    assert v["codec_name"] == "h264"
     assert v.get("field_order", "progressive") == "progressive"
     a = streams(job.output_path, "audio")
     assert [x["channels"] for x in a] == [6, 2]           # 5.1 conservé
