@@ -63,7 +63,7 @@ DEFAULT_SETTINGS = {
     "hardware_accel": "auto", "hw_fallback_cpu": True, "container": "mp4",
     "mkv_for_legacy": True, "dry_run": False, "refresh_plex_after": True,
     "keep_backup": False, "skip_if_bigger": False, "heavy_h264_mbps": 0,
-    "low_priority": True, "prevent_sleep": True, "audio_only_truehd": False,
+    "low_priority": True, "prevent_sleep": True, "audio_only_truehd": False, "fix_posters": True,
     "network_root": "", "plex_prefix": "", "path_maps": [],
     "network_root_asked": False, "detected_hw": "",
     "server_url": "", "token": "", "token_in_keyring": False, "last_server_name": "",
@@ -343,6 +343,22 @@ def guess_plex_prefix(network_root: str, locations: list) -> str:
             idx = low.index(share)
             return "/" + "/".join(parts[: idx + 1])
     return ""
+
+
+def reverse_path_map(local: str, settings: dict) -> str:
+    """Chemin Windows → chemin vu par Plex (inverse de apply_path_maps)."""
+    if not local:
+        return local
+    for m in settings.get("path_maps") or []:
+        src = (m.get("from") or m.get("src") or "").rstrip("\\/")
+        dst = (m.get("to") or m.get("dst") or "").rstrip("\\/")
+        if src and dst and _starts_with_dir(local, dst):
+            return _join_rest(src, local[len(dst):])
+    nr = (settings.get("network_root") or "").rstrip("\\/")
+    pp = (settings.get("plex_prefix") or "").rstrip("\\/")
+    if nr and pp and _starts_with_dir(local, nr):
+        return _join_rest(pp, local[len(nr):])
+    return local
 
 
 def replace_extension(path: str, new_ext: str) -> str:

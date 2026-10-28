@@ -8,7 +8,7 @@ from typing import Callable, List, Optional
 from .config import (
     SUPPORTED_CODECS, apply_path_maps, parent_dir, replace_extension, resolve_output_container,
 )
-from .encoder import EncodeJob
+from .encoder import WORK_DIR, EncodeJob
 from .plex_client import VideoInfo
 
 
@@ -22,14 +22,16 @@ def resolve_local_path(plex_path: str, settings: dict) -> str:
 
 
 def temp_output_path(local_src: str, container: str) -> str:
-    """Fichier caché à côté de la source (.ppix-tmp-Film.avi.mkv) : Plex l'ignore.
+    """Fichier de travail dans un sous-dossier caché : Film.avi → .ppix-travail/Film.avi.mkv.
 
+    Le dossier contient un .plexignore : Plex ne voit jamais le fichier en cours.
     Le nom complet de la source est conservé pour que Film.avi et Film.mkv
     n'utilisent jamais le même fichier temporaire.
     """
-    sep = max(local_src.rfind("/"), local_src.rfind("\\"))
-    folder, name = (local_src[:sep + 1], local_src[sep + 1:]) if sep >= 0 else ("", local_src)
-    return f"{folder}.ppix-tmp-{name}.{container}"
+    sep_pos = max(local_src.rfind("/"), local_src.rfind("\\"))
+    folder, name = (local_src[:sep_pos + 1], local_src[sep_pos + 1:]) if sep_pos >= 0 else ("", local_src)
+    sep = local_src[sep_pos] if sep_pos >= 0 else "/"
+    return f"{folder}{WORK_DIR}{sep}{name}.{container}"
 
 
 def make_job_for_video(v: VideoInfo, settings: dict, codec: Optional[str] = None) -> EncodeJob:

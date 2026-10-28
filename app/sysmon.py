@@ -239,17 +239,21 @@ class LoadMonitor:
             self._pid = pid
 
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
+        """(Re)démarre la mesure. Chaque thread a son propre signal d'arrêt : un
+        redémarrage rapide (arrêt puis relance de la file) ne perd plus la mesure."""
+        old = self._thread
+        self._stop.set()
+        if old and old.is_alive():
+            old.join(timeout=5)
+        self._stop = threading.Event()
         self.latest = None
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread = threading.Thread(target=self._loop, args=(self._stop,), daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
 
-    def _loop(self) -> None:
+    def _loop(self, stop: threading.Event) -> None:
         try:
             import psutil
         except Exception:
@@ -269,7 +273,7 @@ class LoadMonitor:
             psutil.cpu_percent(None)
         refresh = 0
         try:
-            while not self._stop.wait(self.interval):
+            while not stop.wait(self.interval):
                 s = LoadSample()
                 if psutil:
                     s.cpu_total = psutil.cpu_percent(None)
@@ -305,7 +309,8 @@ class LoadMonitor:
                         s.gpu_total, s.gpu_enc = gpu.read()
                 elif use_smi:
                     s.gpu_total, s.gpu_enc = _nvidia_smi()
-                self.latest = s
+                if not stop.is_set():
+                    self.latest = s
         finally:
             if gpu is not None:
                 gpu.close()

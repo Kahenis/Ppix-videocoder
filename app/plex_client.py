@@ -380,6 +380,101 @@ class PlexClient:
         return ", ".join(done) or "aucune action"
 
     # ------------------------------------------------------------------
+    # Affiches des vidéos personnelles
+    # ------------------------------------------------------------------
+    def is_personal_library(self, library: str) -> bool:
+        from .posters import PERSONAL_AGENTS
+        cache = self.__dict__.setdefault("_personal_cache", {})
+        if library in cache:
+            return cache[library]
+        val = False
+        try:
+            if self.server and library:
+                val = (getattr(self.server.library.section(library), "agent", "") or "") in PERSONAL_AGENTS
+        except Exception as e:
+            log(f"Agent de la bibliothèque {library}: {e}", level="DEBUG")
+        cache[library] = val
+        return val
+
+    @staticmethod
+    def _norm(path: str) -> str:
+        return (path or "").replace("\\", "/").rstrip("/").lower()
+
+    @staticmethod
+    def _item_files(item) -> List[str]:
+        out = []
+        for m in getattr(item, "media", None) or []:
+            for p in getattr(m, "parts", None) or []:
+                if getattr(p, "file", ""):
+                    out.append(p.file)
+        return out
+
+    def find_item_by_file(self, plex_path: str, library: str = "", hint_rating_key: str = ""):
+        """Retrouve l'élément Plex d'un fichier (après remplacement, la clé peut changer)."""
+        if not self.server or not plex_path:
+            return None
+        target = self._norm(plex_path)
+        if hint_rating_key:
+            try:
+                item = self.server.fetchItem(int(hint_rating_key))
+                if any(self._norm(f) == target for f in self._item_files(item)):
+                    return item
+            except Exception:
+                pass
+        try:
+            sections = [self.server.library.section(library)] if library else self.list_sections()
+        except Exception:
+            sections = self.list_sections()
+        for sec in sections:
+            libtype = "episode" if sec.type == "show" else "movie"
+            try:
+                for item in sec.recentlyAdded(maxresults=200, libtype=libtype):
+                    if any(self._norm(f) == target for f in self._item_files(item)):
+                        return item
+            except Exception as e:
+                log(f"Recherche {plex_path} dans {sec.title}: {e}", level="DEBUG")
+        return None
+
+    def build_file_index(self, sections=None, stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+        """Index chemin Plex → élément pour des bibliothèques (paginé)."""
+        index: Dict[str, Any] = {}
+        for sec in sections if sections is not None else self.list_sections():
+            libtype = "episode" if sec.type == "show" else "movie"
+            start = 0
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    return index
+                try:
+                    batch = sec.search(libtype=libtype, container_start=start,
+                                       container_size=PAGE_SIZE, maxresults=PAGE_SIZE)
+                except Exception as e:
+                    log(f"Index {sec.title}: {e}", level="WARN")
+                    break
+                for item in batch:
+                    for f in self._item_files(item):
+                        index[self._norm(f)] = item
+                start += len(batch)
+                if len(batch) < PAGE_SIZE:
+                    break
+        return index
+
+    def lookup(self, index: Dict[str, Any], plex_path: str):
+        return index.get(self._norm(plex_path))
+
+    @staticmethod
+    def upload_poster(item, jpg_path: str) -> bool:
+        try:
+            item.uploadPoster(filepath=jpg_path)
+            try:
+                item.lockPoster()
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            log(f"Envoi de l'affiche à Plex impossible : {e}", level="WARN")
+            return False
+
+    # ------------------------------------------------------------------
     # Détection du chemin réseau
     # ------------------------------------------------------------------
     @staticmethod
