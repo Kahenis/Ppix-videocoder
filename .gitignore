@@ -12,3 +12,4 @@ ffmpeg/ffprobe.exe
 ffmpeg/ffplay.exe
 .DS_Store
 *.log
+.pytest_cache/

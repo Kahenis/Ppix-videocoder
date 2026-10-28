@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from .config import get_config_dir, APP_NAME, APP_VERSION
 
 _LOG_NAME = "ppix-videocoder.log"
 _MAX_BYTES = 2 * 1024 * 1024
+_LOCK = threading.Lock()
 
 
 def get_log_path() -> Path:
@@ -30,16 +32,20 @@ def _ensure_header(path: Path) -> None:
 def log(message: str, level: str = "INFO") -> None:
     path = get_log_path()
     try:
-        _ensure_header(path)
-        if path.exists() and path.stat().st_size > _MAX_BYTES:
-            text = path.read_text(encoding="utf-8", errors="replace")
-            path.write_text(text[-_MAX_BYTES // 2 :], encoding="utf-8")
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        line = f"[{ts}] [{level}] {message}\n"
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line)
+        with _LOCK:
+            _write(path, message, level)
     except Exception:
         pass
+
+
+def _write(path: Path, message: str, level: str) -> None:
+    _ensure_header(path)
+    if path.stat().st_size > _MAX_BYTES:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        path.write_text(text[-_MAX_BYTES // 2:], encoding="utf-8")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(f"[{ts}] [{level}] {message}\n")
 
 
 def log_exception(prefix: str = "Exception") -> None:
