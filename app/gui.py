@@ -26,6 +26,7 @@ from .encoder import EncodeJob, Encoder
 from .jobs import (
     JobQueue, finalize_job_settings, make_job_for_video, plex_folder_of, resolve_local_path,
 )
+from .local_convert import ask_local_file
 from .logger import clear_log, log, log_exception, open_log_folder, read_log
 from .plex_client import PlexClient, ScanCancelled, VideoInfo
 from .results_list import ResultsList
@@ -210,7 +211,7 @@ class App(ctk.CTk):
                                              command=lambda: self._show_page("connect"))
         self.btn_nav_connect.pack(side="left", padx=(0, 6))
         self.btn_nav_scan = ctk.CTkButton(nav, text="2. Scanner", width=140, fg_color="#333",
-                                          state="disabled", command=lambda: self._show_page("scan"))
+                                          command=lambda: self._show_page("scan"))
         self.btn_nav_scan.pack(side="left", padx=6)
         self.btn_nav_queue = ctk.CTkButton(nav, text="3. Encoder", width=170, fg_color="#333",
                                            command=lambda: self._show_page("queue"))
@@ -321,7 +322,6 @@ class App(ctk.CTk):
         except Exception:
             pass
         self.btn_nav_connect.configure(text="1. Connexion")
-        self.btn_nav_scan.configure(state="disabled")
         self._set_connected_ui(False)
         self._log("Déconnecté — token supprimé.")
 
@@ -480,6 +480,8 @@ class App(ctk.CTk):
         ctk.CTkButton(row, text="Lancer le scan", width=140, fg_color=ACCENT, text_color="#111",
                       hover_color=ACCENT_HOVER, command=self._start_scan).pack(side="left", padx=4)
         ctk.CTkButton(row, text="Arrêter", width=80, fg_color="#333", command=self._stop_scan).pack(side="left", padx=4)
+        ctk.CTkButton(row, text="Parcourir local…", width=140, fg_color="#333",
+                      command=lambda: ask_local_file(self)).pack(side="left", padx=(16, 4))
         ctk.CTkButton(row, text="Tout sélectionner", width=140, fg_color="#333",
                       command=self._select_all).pack(side="left", padx=(16, 4))
         ctk.CTkButton(row, text="Tout désélectionner", width=150, fg_color="#333",
@@ -850,6 +852,16 @@ class App(ctk.CTk):
         vinfo = getattr(job, "_video_info", None)
         if job.audio_only:
             return "audio TrueHD", "AC3 640k · vidéo copiée"
+        if job.local:
+            src = (getattr(vinfo, "video_codec", "") or "?").lower()
+            aud = {"copy": "audio copié", "aac": "AAC", "ac3": "AC3", "eac3": "E-AC3", "mp3": "MP3"}.get(
+                job.audio_target, job.audio_target)
+            lay = {"5.1": " 5.1", "stereo": " stéréo"}.get(job.audio_layout, "")
+            cont = (Path(job.final_path).suffix.lstrip(".") or "mkv").lower()
+            new = f"{CODEC_CHOICE_LABELS.get(job.codec, job.codec)} {cont} · {aud}{lay}"
+            if job.hw_used:
+                new += f" · {HARDWARE_SHORT.get(job.hw_used, job.hw_used)}"
+            return f"Local · {src}/{job.source_container}", new
         old_codec = (getattr(vinfo, "video_codec", "") or "?").lower()
         old_cont = (job.source_container or "").lower()
         old = f"{old_codec}/{old_cont}" if old_cont else old_codec
@@ -999,6 +1011,15 @@ class App(ctk.CTk):
             self._record_history(job)
         elif job.status == "simulated":
             self._ui(self._log, f"[essai] {name} : " + " | ".join(job.plan))
+        elif job.status == "done" and job.local:
+            if self.encoder.save_local(job, keep_backup=bool(self.settings.get("keep_backup"))):
+                g = job.gain_ratio * 100
+                self._ui(self._log, f"{name} : {job.message} ({'−' if g >= 0 else '+'}{abs(g):.0f} %)")
+            else:
+                job.status = "error"
+                self._ui(self._log, f"{name} : {job.message}", "ERROR")
+                self.encoder.discard_output(job, quiet=True)
+            self._record_history(job)
         elif job.status == "done":
             if self.settings.get("skip_if_bigger") and job.output_size >= job.original_size:
                 self.encoder.discard_output(job)
@@ -1094,7 +1115,7 @@ class App(ctk.CTk):
             "output_size": job.output_size, "duration_s": round(job.end_time - job.start_time, 1),
             "plex_path": (replace_extension(job.plex_path, Path(job.final_path).suffix)
                           if job.status == "replaced" and job.plex_path and job.final_path else job.plex_path),
-            "rating_key": job.rating_key, "library": job.library,
+            "rating_key": job.rating_key, "library": job.library, "local": job.local,
         })
         save_history(self.history)
 

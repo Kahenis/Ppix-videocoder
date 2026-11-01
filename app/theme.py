@@ -21,11 +21,12 @@ STATUS_LABELS = {
     "simulated": "simulé",
     "replaced": "remplacé",
     "kept": "gardé (2 fichiers)",
+    "saved": "enregistré",
     "discarded": "écarté",
     "error": "erreur",
     "cancelled": "annulé",
 }
 STATUS_COLORS = {
     "pending": MUTED, "running": INFO, "done": ACCENT, "simulated": MUTED,
-    "replaced": OK, "kept": OK, "discarded": WARN, "error": ERR, "cancelled": WARN,
+    "replaced": OK, "kept": OK, "saved": OK, "discarded": WARN, "error": ERR, "cancelled": WARN,
 }

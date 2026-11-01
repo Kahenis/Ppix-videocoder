@@ -59,7 +59,7 @@ def history_files(history: List[dict]) -> List[dict]:
     """Fichiers remplacés par l'application, dernier passage d'abord, sans doublon."""
     seen, out = set(), []
     for e in reversed(history):
-        if e.get("status") not in ("replaced", "done"):
+        if e.get("status") not in ("replaced", "done") or e.get("local"):
             continue
         f = e.get("file") or ""
         key = f.replace("\\", "/").lower()

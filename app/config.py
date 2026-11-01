@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 KEYRING_SERVICE = "Ppix-Videocoder"
 KEYRING_USER = "plex-token"
@@ -63,7 +63,7 @@ DEFAULT_SETTINGS = {
     "hardware_accel": "auto", "hw_fallback_cpu": True, "container": "mp4",
     "mkv_for_legacy": True, "dry_run": False, "refresh_plex_after": True,
     "keep_backup": False, "skip_if_bigger": False, "heavy_h264_mbps": 0,
-    "low_priority": True, "prevent_sleep": True, "audio_only_truehd": False, "fix_posters": True,
+    "low_priority": True, "prevent_sleep": True, "audio_only_truehd": False, "fix_posters": True, "last_local_dir": "",
     "network_root": "", "plex_prefix": "", "path_maps": [],
     "network_root_asked": False, "detected_hw": "",
     "server_url": "", "token": "", "token_in_keyring": False, "last_server_name": "",

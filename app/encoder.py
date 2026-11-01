@@ -30,6 +30,8 @@ from .config import (
 from .logger import log
 
 AC3_BITRATE = "640k"
+# Débits des conversions locales : (stéréo et moins, 5.1)
+LOCAL_AUDIO_BITRATES = {"aac": (192, 384), "ac3": (224, 640), "eac3": (192, 384), "mp3": (192, 192)}
 KEYFRAME_SECONDS = 2.0          # une image-clé toutes les 2 s
 KEYFRAME_MAX_GAP = 5.0          # au-delà : fichier refusé (vignettes noires, avance rapide lente)
 WORK_DIR = ".ppix-travail"      # dossier de travail ignoré par Plex (.plexignore)
@@ -59,6 +61,11 @@ class EncodeJob:
     hardware: str = "none"
     hw_fallback: bool = True
     audio_only: bool = False            # mode « Audio seule » : TrueHD → AC3, vidéo copiée
+    # --- conversion locale (hors Plex) ---
+    local: bool = False                 # fichier choisi avec « Parcourir local… »
+    audio_target: str = ""              # "" = règles Plex ; copy / aac / ac3 / eac3 / mp3
+    audio_layout: str = "keep"          # keep / 5.1 / stereo
+    delete_original: bool = False       # supprimer la source après enregistrement vérifié
     low_priority: bool = True
     container: str = "mp4"
     dry_run: bool = False
@@ -86,7 +93,7 @@ class EncodeJob:
 
     @property
     def is_finished(self) -> bool:
-        return self.status in ("done", "simulated", "replaced", "kept", "discarded", "error", "cancelled")
+        return self.status in ("done", "simulated", "replaced", "kept", "saved", "discarded", "error", "cancelled")
 
     @property
     def awaiting_decision(self) -> bool:
@@ -467,6 +474,9 @@ class Encoder:
                     modes.append("copy")
                     plan.append(f"audio #{i} {lang} {ac} {ch}ch → copie".replace("  ", " "))
                 continue
+            if job.audio_target:
+                Encoder._audio_target_args(cmd, plan, modes, job, i, a, mp4)
+                continue
             want_stereo = job.audio_channels == 2 and ch > 2
             copy_ok = (job.keep_audio_copy and is_audio_safe_for_plex(ac) and not want_stereo
                        and (ac in MP4_COPY_AUDIO_CODECS if mp4 else True))
@@ -485,6 +495,51 @@ class Encoder:
             cmd += ["-map", "0:a?", "-c:a", "aac", "-b:a", job.audio_bitrate]
             modes.append("aac")
         job.audio_mode = "/".join(sorted(set(modes))) or "aucun"
+
+    @staticmethod
+    def _audio_target_args(cmd: List[str], plan: List[str], modes: List[str], job: EncodeJob,
+                           i: int, a: Dict[str, Any], mp4: bool) -> None:
+        """Audio choisi explicitement (conversion locale) : même traitement pour chaque piste."""
+        ac = (a.get("codec_name") or "").lower()
+        ch = int(a.get("channels") or 2)
+        lang = (a.get("tags") or {}).get("language", "")
+        label = f"audio #{i} {lang} {ac or '?'} {ch}ch".replace("  ", " ")
+        target = job.audio_target
+        if target == "copy":
+            if not mp4 or ac in MP4_COPY_AUDIO_CODECS:
+                cmd += [f"-c:a:{i}", "copy"]
+                modes.append("copy")
+                plan.append(f"{label} → copie")
+                return
+            target = "aac"
+            plan.append(f"{label} : {ac} impossible en MP4 → AAC")
+        max_ch = {"ac3": 6, "eac3": 6, "mp3": 2}.get(target, 8)
+        if job.audio_layout == "stereo":
+            out_ch = min(ch, 2)
+        elif job.audio_layout == "5.1":
+            out_ch = min(ch, 6)            # pas de faux 5.1 à partir d'une source stéréo
+        else:
+            out_ch = ch
+        out_ch = max(1, min(out_ch, max_ch))
+        kbps = LOCAL_AUDIO_BITRATES[target][0 if out_ch <= 2 else 1]
+        enc = {"aac": "aac", "ac3": "ac3", "eac3": "eac3", "mp3": "libmp3lame"}[target]
+        cmd += [f"-c:a:{i}", enc, f"-b:a:{i}", f"{kbps}k", f"-ac:a:{i}", str(out_ch)]
+        try:
+            rate = int(a.get("sample_rate") or 48000)
+        except ValueError:
+            rate = 48000
+        if rate not in (48000, 44100, 32000):
+            cmd += [f"-ar:a:{i}", "48000"]
+        layout = {1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1"}.get(out_ch, f"{out_ch}ch")
+        name = {"aac": "AAC", "ac3": "AC3", "eac3": "E-AC3", "mp3": "MP3"}[target]
+        cmd += [f"-metadata:s:a:{i}", f"title={name} {layout}"]
+        modes.append(target)
+        note = ""
+        if job.audio_layout == "5.1" and ch < 6:
+            note = " (source sans 5.1 : canaux conservés)"
+        elif ch > out_ch and job.audio_layout == "keep":
+            note = f" ({name} limité à {layout})"
+        plan.append(f"{label} → {name} {layout} {kbps}k{note}")
 
     # ------------------------------------------------------------------
     # Encodage
@@ -856,6 +911,41 @@ class Encoder:
         job.output_path = str(target)
         job.status = "kept"
         job.message = f"Les deux gardés → {target.name}"
+        log(job.message)
+        return True
+
+    @staticmethod
+    def save_local(job: EncodeJob, keep_backup: bool = False) -> bool:
+        """Conversion locale : dépose le fichier vérifié à la destination choisie.
+
+        - destination = fichier d'origine → remplacement sécurisé (sauvegarde + retour arrière)
+        - sinon → écriture à la destination (écrase si l'utilisateur l'a confirmé dans
+          « Enregistrer sous »), puis suppression de l'original si demandé
+        """
+        src = os.path.normcase(os.path.abspath(job.video_path))
+        dst = os.path.normcase(os.path.abspath(job.final_path))
+        if src == dst:
+            return Encoder.replace_original(job, keep_backup=keep_backup)
+        if job.status != "done" or not os.path.exists(job.output_path):
+            job.message = "Rien à enregistrer (fichier encodé absent)."
+            return False
+        try:
+            os.replace(job.output_path, job.final_path)
+            cleanup_work_dir(job.output_path)
+        except Exception as e:
+            job.message = f"Enregistrement impossible à la destination : {e}"
+            log(job.message, level="ERROR")
+            return False
+        job.status = "saved"
+        job.message = f"Enregistré → {job.final_path}"
+        if job.delete_original:
+            try:
+                os.remove(job.video_path)
+                job.status = "replaced"
+                job.message += " · original supprimé"
+            except Exception as e:
+                job.message += f" · original NON supprimé ({e})"
+                log(f"Suppression de l'original {job.video_path}: {e}", level="WARN")
         log(job.message)
         return True
 

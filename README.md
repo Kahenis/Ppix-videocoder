@@ -6,7 +6,7 @@
 Application **Windows** autonome pour optimiser les codecs vidéo de vos bibliothèques **Plex**.
 Les vieux codecs (AVI, MPEG-2, WMV…) obligent souvent Plex à transcoder en direct, ce qui charge le NAS et coupe le Direct Play. Ppix-Videocoder scanne vos bibliothèques, détecte les fichiers non optimaux, et les réencode en H.265 ou H.264 avec FFmpeg inclus — file d’attente, progression, remplacement optionnel de l’original, le tout en profitant de l’accélération matérielle de votre PC (CG Nvidia, CG AMD, CPU)
 
-> **Version publiable : 1.6.0**  
+> **Version publiable : 1.7.0**  
 > Téléchargement : [Releases](https://github.com/Kahenis/Ppix-videocoder/releases/latest)
 
 ---
@@ -53,6 +53,7 @@ Les réglages (token, chemins réseau, historique) sont conservés entre les ver
 | Images-clés | Une image-clé toutes les 2 s (vignettes Plex correctes, avance rapide fluide, ExoPlayer), contrôlée avant remplacement |
 | Vidéos perso | Affiche Plex créée à partir d'une vraie image de la vidéo ; outil « Fichiers déjà convertis » pour réparer les affiches noires et réencoder les anciens fichiers |
 | Suivi | Pendant l'encodage : qui travaille (carte graphique et moteur NVENC/Quick Sync/AMF, ou processeur), % CPU total et de l'encodage, % GPU et de l'encodeur vidéo |
+| Fichier local | Bouton « Parcourir local… » : conversion d'un fichier du disque ou du réseau hors Plex (H.265/H.264, audio conservé/AAC/AC3/E-AC3/MP3 en 5.1 ou stéréo, destination au choix — par défaut le fichier d'origine, remplacé après vérification) |
 | Confort | Priorité basse, PC maintenu éveillé, arrêt du PC en fin de file (option) |
 
 ---
@@ -112,7 +113,7 @@ python -m pytest -q tests                 # le test d'interface demande un affic
 
 Déclencher un build / une release :
 
-- **Tag** `v1.6.0` poussé sur `main` → build + release automatiques  
+- **Tag** `v1.7.0` poussé sur `main` → build + release automatiques  
 - Ou **Actions → Build Windows EXE → Run workflow** (case « Publish release »)
 
 ---
