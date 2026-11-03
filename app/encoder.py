@@ -956,18 +956,26 @@ class Encoder:
     # Après encodage
     # ------------------------------------------------------------------
     @staticmethod
-    def discard_output(job: EncodeJob, quiet: bool = False) -> bool:
-        try:
-            if job.output_path and os.path.exists(job.output_path):
-                os.remove(job.output_path)
-                if not quiet:
-                    log(f"Fichier encodé supprimé : {job.output_path}")
-            if job.output_path:
-                cleanup_work_dir(job.output_path)
+    def discard_output(job: EncodeJob, quiet: bool = False, attempts: int = 20) -> bool:
+        """Supprime le fichier encodé. Sous Windows, un fichier que FFmpeg vient de
+        lâcher reste verrouillé un court instant : on réessaie jusqu'à ~5 s."""
+        path = job.output_path
+        if not path:
             return True
-        except Exception as e:
-            log(f"Suppression impossible {job.output_path}: {e}", level="WARN")
-            return False
+        last: Optional[Exception] = None
+        for i in range(max(1, attempts)):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+                    if not quiet:
+                        log(f"Fichier encodé supprimé : {path}")
+                cleanup_work_dir(path)
+                return True
+            except Exception as e:
+                last = e
+                time.sleep(0.25)
+        log(f"Suppression impossible {path}: {last}", level="WARN")
+        return False
 
     @staticmethod
     def keep_both(job: EncodeJob) -> bool:
