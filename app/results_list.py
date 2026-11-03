@@ -70,6 +70,12 @@ class ResultsList:
         self._on_select: Optional[Callable[[VideoInfo, bool], None]] = None
         self._on_codec: Optional[Callable[[VideoInfo, str], None]] = None
         self._videos: List[VideoInfo] = []
+        # Sélection multiple (Maj / Ctrl)
+        self._order: List[str] = []                 # clés des fichiers dans l'ordre affiché
+        self._by_key: Dict[str, VideoInfo] = {}
+        self._groups: Dict[int, List[str]] = {}     # index d'en-tête → clés du groupe
+        self.anchor: Optional[str] = None           # point de départ pour Maj + clic
+        self.row_boxes: Dict[str, Any] = {}
 
     def winfo_exists(self) -> bool:
         try:
@@ -84,6 +90,7 @@ class ResultsList:
             except Exception:
                 pass
         self.row_vars = {}
+        self.row_boxes = {}
 
     def render(
         self,
@@ -159,6 +166,21 @@ class ResultsList:
                         items.append(("row", None, v))
 
             self._items = items
+            self._order = [v.key for kind, _, v in items if kind == "row"]
+            self._by_key = {v.key: v for kind, _, v in items if kind == "row"}
+            self._groups = {}
+            for i, (kind, _, _v) in enumerate(items):
+                if kind == "row":
+                    continue
+                keys = []
+                for kind2, _, v2 in items[i + 1:]:
+                    if kind2 == "h_lib" or (kind == "h_series" and kind2 == "h_series"):
+                        break
+                    if kind2 == "row":
+                        keys.append(v2.key)
+                self._groups[i] = keys
+            if self.anchor not in self._by_key:
+                self.anchor = None
             try:
                 wait.destroy()
             except Exception:
@@ -222,21 +244,28 @@ class ResultsList:
             return
 
         # Build the page in one go — only ~120 rows, fast enough
-        for kind, title, video in slice_:
+        for offset, (kind, title, video) in enumerate(slice_):
+            idx = start + offset
             if kind == "h_lib":
-                ctk.CTkLabel(
+                lbl = ctk.CTkLabel(
                     self.frame,
                     text=f"  {title}",
-                    font=ctk.CTkFont(size=15, weight="bold"),
+                    font=self._font(15),
                     text_color=ACCENT,
-                ).pack(anchor="w", pady=(12, 4), padx=8)
+                    cursor="hand2",
+                )
+                lbl.pack(anchor="w", pady=(12, 4), padx=8)
+                lbl.bind("<Button-1>", lambda _e, i=idx: self.toggle_group(i))
             elif kind == "h_series":
-                ctk.CTkLabel(
+                lbl = ctk.CTkLabel(
                     self.frame,
                     text=f"    {title}",
-                    font=ctk.CTkFont(size=13, weight="bold"),
+                    font=self._font(13),
                     text_color=TEXT,
-                ).pack(anchor="w", padx=12, pady=(6, 2))
+                    cursor="hand2",
+                )
+                lbl.pack(anchor="w", padx=12, pady=(6, 2))
+                lbl.bind("<Button-1>", lambda _e, i=idx: self.toggle_group(i))
             else:
                 self._row(video)
 
@@ -262,24 +291,21 @@ class ResultsList:
 
         var = ctk.BooleanVar(master=self.app, value=bool(selected.get(key, False)))
         self.row_vars[key] = var
+        # Case à cocher dessinée : le clic est géré ici pour connaître Maj / Ctrl
+        box = ctk.CTkButton(row, text="", width=24, height=24, corner_radius=5, border_width=2,
+                            border_color=ACCENT, hover_color="#3a3a3a", fg_color="transparent",
+                            text_color="#111")
+        box.pack(side="left", padx=8, pady=4)
+        self.row_boxes[key] = box
+        var.trace_add("write", lambda *_a, k=key: self._paint(k))
+        self._paint(key)
 
-        def on_toggle(k=key, bv=var, video=v):
-            checked = bool(bv.get())
-            selected[k] = checked
-            if self._on_select:
-                try:
-                    self._on_select(video, checked)
-                except Exception:
-                    pass
-
-        ctk.CTkCheckBox(
-            row, text="", variable=var, command=on_toggle, width=28,
-            fg_color=ACCENT, hover_color="#C48A0B",
-        ).pack(side="left", padx=6, pady=4)
-
-        ctk.CTkLabel(
+        title = ctk.CTkLabel(
             row, text=(v.display_title or "")[:58], anchor="w", width=280, text_color=TEXT,
-        ).pack(side="left", padx=4)
+        )
+        title.pack(side="left", padx=4)
+        for w in (box, row, title):
+            w.bind("<Button-1>", lambda e, video=v: self.click(video, e), add="+")
 
         cont = (v.container or "?").upper()
         if v.audio_only:
@@ -292,15 +318,19 @@ class ResultsList:
             self._row_buttons(row, v)
             return
         extra = f" · {v.bitrate / 1000:.0f} Mb/s" if v.reason == "débit élevé" and v.bitrate else ""
-        ctk.CTkLabel(row, text=f"{v.video_codec or '?'} / {cont}{extra}", text_color=WARN, width=150,
-                     anchor="w").pack(side="left", padx=4)
-        ctk.CTkLabel(
+        l1 = ctk.CTkLabel(row, text=f"{v.video_codec or '?'} / {cont}{extra}", text_color=WARN, width=150,
+                          anchor="w")
+        l1.pack(side="left", padx=4)
+        l2 = ctk.CTkLabel(
             row,
             text=f"{v.resolution_label} · {v.size_label} · {v.duration_str}",
             text_color=MUTED,
             width=170,
             anchor="w",
-        ).pack(side="left", padx=4)
+        )
+        l2.pack(side="left", padx=4)
+        for w in (l1, l2):
+            w.bind("<Button-1>", lambda e, video=v: self.click(video, e), add="+")
 
         cur = codec_choice.get(key, "hevc")
         if cur not in CODEC_CHOICE_LABELS:
@@ -355,6 +385,81 @@ class ResultsList:
         for k, var in self.row_vars.items():
             try:
                 var.set(bool(selected.get(k, False)))
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # Sélection multiple
+    # ------------------------------------------------------------------
+    def _font(self, size: int):
+        cache = self.__dict__.setdefault("_fonts", {})
+        if size not in cache:
+            cache[size] = ctk.CTkFont(size=size, weight="bold")
+        return cache[size]
+
+    def _paint(self, key: str) -> None:
+        box = self.row_boxes.get(key)
+        if box is None:
+            return
+        on = bool(self._selected.get(key, False))
+        try:
+            box.configure(text="✓" if on else "", fg_color=ACCENT if on else "transparent",
+                          hover_color="#C48A0B" if on else "#3a3a3a")
+        except Exception:
+            pass
+
+    def apply(self, keys: List[str], value: bool) -> int:
+        """Coche/décoche des fichiers (toutes pages) ; retourne le nombre de changements."""
+        n = 0
+        for k in keys:
+            if bool(self._selected.get(k, False)) == value:
+                continue
+            self._selected[k] = value
+            n += 1
+            v = self._by_key.get(k)
+            if v is not None and self._on_select:
+                try:
+                    self._on_select(v, value)
+                except Exception:
+                    pass
+        self.refresh_checks()
+        return n
+
+    def click(self, video: VideoInfo, event=None) -> str:
+        """Clic : coche/décoche. Maj + clic : toute la plage depuis le dernier clic.
+        Ctrl + clic : un seul fichier (nouveau point de départ)."""
+        state = int(getattr(event, "state", 0) or 0)
+        shift, ctrl = bool(state & 0x0001), bool(state & 0x0004)
+        key = video.key
+        value = not bool(self._selected.get(key, False))
+        if shift and not ctrl and self.anchor in self._by_key and key in self._by_key:
+            a, b = self._order.index(self.anchor), self._order.index(key)
+            lo, hi = min(a, b), max(a, b)
+            self.apply(self._order[lo:hi + 1], value)
+        else:
+            self.apply([key], value)
+            self.anchor = key
+        self._report()
+        return "break"
+
+    def toggle_group(self, item_index: int) -> None:
+        keys = self._groups.get(item_index, [])
+        if not keys:
+            return
+        value = not all(self._selected.get(k, False) for k in keys)
+        self.apply(keys, value)
+        self._report()
+
+    def select_visible(self, value: bool) -> None:
+        self.apply(list(self._order), value)
+        self._report()
+
+    def _report(self) -> None:
+        n = sum(1 for k in self._order if self._selected.get(k))
+        if self._on_status:
+            try:
+                self._on_status(f"{n} fichier(s) coché(s) sur {len(self._order)} — Maj + clic : plage, "
+                                "Ctrl + clic : un fichier, Ctrl + A : tout, Échap : rien")
             except Exception:
                 pass
 

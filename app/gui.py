@@ -93,6 +93,8 @@ class App(ctk.CTk):
         self._shutdown_var = ctk.BooleanVar(master=self, value=False)
         self._shutdown_flag = False
         self._decision_lock = threading.Lock()
+        self._qsel: set = set()          # file d'encodage : id des lignes sélectionnées
+        self._qanchor: Optional[int] = None
         # Ramasse-miettes exécuté dans le thread de l'interface uniquement : libérer un
         # objet Tk (police, variable) depuis le thread d'encodage peut le bloquer.
         gc.disable()
@@ -109,6 +111,9 @@ class App(ctk.CTk):
                          justify="left").pack(padx=20, pady=20, fill="both", expand=True)
             return
         self.after(80, self._drain)
+        for seq, fn in (("<Control-a>", self._key_select_all), ("<Control-A>", self._key_select_all),
+                        ("<Escape>", self._key_escape), ("<Delete>", self._key_delete)):
+            self.bind(seq, fn, add="+")
         self.after(300, self._try_auto_connect)
         self.after(500, self._detect_hw)
         threading.Thread(target=self._read_hardware_names, daemon=True).start()
@@ -805,6 +810,23 @@ class App(ctk.CTk):
                       command=self._clear_pending).pack(side="left", padx=4)
         ctk.CTkButton(row, text="Déjà convertis…", width=130, fg_color="#333",
                       command=self._show_repair).pack(side="right", padx=4)
+        selbar = ctk.CTkFrame(top, fg_color=PANEL)
+        selbar.pack(fill="x", padx=12, pady=(0, 4))
+        self.lbl_qsel = ctk.CTkLabel(selbar, text="", text_color=TEXT, width=150, anchor="w")
+        self.lbl_qsel.pack(side="left", padx=4)
+        self._qsel_buttons = []
+        for txt, cmd, color in (("↑ Monter", lambda: self._sel_move(-1), "#333"),
+                                ("↓ Descendre", lambda: self._sel_move(1), "#333"),
+                                ("✕ Retirer", self._sel_remove, "#333"),
+                                ("Remplacer", lambda: self._sel_decide("replace"), DANGER),
+                                ("Garder les 2", lambda: self._sel_decide("keep"), "#333"),
+                                ("Jeter", lambda: self._sel_decide("discard"), "#333")):
+            b = ctk.CTkButton(selbar, text=txt, width=100, height=26, fg_color=color,
+                              hover_color=DANGER_HOVER if color == DANGER else "#444", command=cmd)
+            b.pack(side="left", padx=2)
+            self._qsel_buttons.append(b)
+        ctk.CTkLabel(selbar, text="Clic : une ligne · Ctrl + clic : ajouter · Maj + clic : plage · Ctrl + A · Suppr",
+                     text_color=MUTED).pack(side="right", padx=4)
         row2 = ctk.CTkFrame(top, fg_color=PANEL)
         row2.pack(fill="x", padx=12, pady=(0, 8))
         self.queue_summary = ctk.CTkLabel(row2, text="", text_color=MUTED)
@@ -850,10 +872,15 @@ class App(ctk.CTk):
             w.destroy()
         self._queue_widgets = {}
         jobs = self.queue.snapshot()
+        alive = {id(j) for j in jobs}
+        self._qsel &= alive
+        if self._qanchor not in alive:
+            self._qanchor = None
         if not jobs:
             ctk.CTkLabel(self.queue_list, text="Aucun fichier dans la file.", text_color=MUTED).pack(pady=20)
         for i, job in enumerate(jobs):
             self._build_queue_row(i, job)
+        self._paint_qsel()
         try:
             self.queue_summary.configure(text=self._queue_summary_text())
         except Exception:
@@ -883,16 +910,16 @@ class App(ctk.CTk):
         return old, new
 
     def _build_queue_row(self, i: int, job: EncodeJob) -> None:
-        row = ctk.CTkFrame(self.queue_list, fg_color=CARD, corner_radius=6)
+        row = ctk.CTkFrame(self.queue_list, fg_color=CARD, corner_radius=6, border_width=2, border_color=CARD)
         row.pack(fill="x", padx=8, pady=3)
         line1 = ctk.CTkFrame(row, fg_color=CARD)
-        line1.pack(fill="x")
+        line1.pack(fill="x", padx=2, pady=(2, 0))
         name = Path(job.plex_path.replace("\\", "/") or job.video_path).name
-        ctk.CTkLabel(line1, text=f"{i + 1}. {name[:52]}", width=330, anchor="w",
-                     text_color=TEXT).pack(side="left", padx=6, pady=(6, 0))
+        l_name = ctk.CTkLabel(line1, text=f"{i + 1}. {name[:52]}", width=330, anchor="w", text_color=TEXT)
+        l_name.pack(side="left", padx=6, pady=(6, 0))
         old, new = self._codec_labels(job)
-        ctk.CTkLabel(line1, text=f"{old}  →  {new}", width=280, anchor="w",
-                     text_color=MUTED).pack(side="left", padx=4, pady=(6, 0))
+        l_codec = ctk.CTkLabel(line1, text=f"{old}  →  {new}", width=280, anchor="w", text_color=MUTED)
+        l_codec.pack(side="left", padx=4, pady=(6, 0))
         prog = ctk.CTkProgressBar(line1, width=150, progress_color=ACCENT)
         prog.set(max(0.0, min(1.0, (job.progress or 0) / 100.0)))
         prog.pack(side="left", padx=6, pady=(6, 0))
@@ -926,7 +953,125 @@ class App(ctk.CTk):
             lbl_load = ctk.CTkLabel(row, text=self._load_text(job), anchor="w", justify="left",
                                     wraplength=1050, text_color=MUTED)
             lbl_load.pack(fill="x", padx=10, pady=(0, 6))
-        self._queue_widgets[id(job)] = {"prog": prog, "lbl": lbl, "load": lbl_load, "status": job.status}
+        self._queue_widgets[id(job)] = {"prog": prog, "lbl": lbl, "load": lbl_load, "status": job.status,
+                                        "row": row}
+        for w in (row, line1, l_name, l_codec, prog, lbl, lbl_load):
+            if w is not None:
+                w.bind("<Button-1>", lambda e, j=job: self._queue_click(j, e), add="+")
+
+    # ------------------------------------------------------------------
+    # File : sélection multiple (clic, Ctrl + clic, Maj + clic)
+    # ------------------------------------------------------------------
+    def _queue_click(self, job: EncodeJob, event=None):
+        state = int(getattr(event, "state", 0) or 0)
+        shift, ctrl = bool(state & 0x0001), bool(state & 0x0004)
+        jid = id(job)
+        ids = [id(j) for j in self.queue.snapshot()]
+        if shift and self._qanchor in ids and jid in ids:
+            a, b = ids.index(self._qanchor), ids.index(jid)
+            rng = set(ids[min(a, b):max(a, b) + 1])
+            self._qsel = (self._qsel | rng) if ctrl else rng
+        elif ctrl:
+            self._qsel ^= {jid}
+            self._qanchor = jid
+        else:
+            self._qsel = {jid}
+            self._qanchor = jid
+        self._paint_qsel()
+        return "break"
+
+    def _selected_jobs(self) -> List[EncodeJob]:
+        return [j for j in self.queue.snapshot() if id(j) in self._qsel]
+
+    def _paint_qsel(self):
+        for jid, w in self._queue_widgets.items():
+            row = w.get("row")
+            if row is not None:
+                try:
+                    row.configure(border_color=ACCENT if jid in self._qsel else CARD)
+                except Exception:
+                    pass
+        sel = self._selected_jobs()
+        try:
+            self.lbl_qsel.configure(text=f"{len(sel)} sélectionné(s)" if sel else "Aucune sélection")
+            has = {"pending": any(j.status == "pending" for j in sel),
+                   "done": any(j.status == "done" and not j.local and not getattr(j, "_claimed", False)
+                               for j in sel),
+                   "removable": any(j.status == "pending" or (j.is_finished and j.status != "done") for j in sel)}
+            states = [has["pending"], has["pending"], has["removable"], has["done"], has["done"], has["done"]]
+            for b, on in zip(self._qsel_buttons, states):
+                b.configure(state="normal" if on else "disabled")
+        except Exception:
+            pass
+
+    def _sel_move(self, delta: int):
+        jobs = [j for j in self._selected_jobs() if j.status == "pending"]
+        if jobs:
+            self.queue.move_many(jobs, delta)
+
+    def _sel_remove(self):
+        n = 0
+        for j in self._selected_jobs():
+            if j.status == "pending":
+                self._remove_job(j)
+                n += 1
+            elif j.is_finished and j.status != "done":
+                self.queue.remove(j)
+                n += 1
+        if n:
+            self._log(f"{n} ligne(s) retirée(s) de la file.")
+
+    def _sel_decide(self, action: str):
+        jobs = [j for j in self._selected_jobs()
+                if j.status == "done" and not j.local and not getattr(j, "_claimed", False)]
+        if not jobs:
+            return
+        if action == "replace" and len(jobs) > 1:
+            confirm(self, "Remplacer ?", f"Remplacer les {len(jobs)} originaux sélectionnés par les fichiers "
+                                         "encodés ?", lambda: [self._decide(j, action) for j in jobs],
+                    yes_label="Remplacer", danger=True)
+            return
+        for j in jobs:
+            self._decide(j, action)
+
+    def _typing_in_entry(self) -> bool:
+        try:
+            w = self.focus_get()
+        except Exception:
+            return False
+        if w is None:
+            return False
+        if w.winfo_toplevel() is not self:
+            return True        # une autre fenêtre (paramètres, assistant…) a le focus
+        return w.winfo_class() in ("Entry", "Text", "TEntry")
+
+    def _key_select_all(self, _event=None):
+        if self._typing_in_entry():
+            return None
+        if self._page == "scan" and hasattr(self, "results_list") and self.results_list.winfo_exists():
+            self.results_list.select_visible(True)
+            return "break"
+        if self._page == "queue":
+            self._qsel = {id(j) for j in self.queue.snapshot()}
+            self._paint_qsel()
+            return "break"
+        return None
+
+    def _key_escape(self, _event=None):
+        if self._typing_in_entry():
+            return None
+        if self._page == "scan" and hasattr(self, "results_list") and self.results_list.winfo_exists():
+            self.results_list.select_visible(False)
+        elif self._page == "queue":
+            self._qsel = set()
+            self._paint_qsel()
+        return None
+
+    def _key_delete(self, _event=None):
+        if self._typing_in_entry() or self._page != "queue":
+            return None
+        self._sel_remove()
+        return "break"
 
     def _load_text(self, job: EncodeJob) -> str:
         """« Matériel : NVIDIA … (NVENC) · CPU 18 % (encodage 12 %) · GPU 35 % (encodeur vidéo 82 %) »"""
