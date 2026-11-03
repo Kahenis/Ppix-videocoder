@@ -236,12 +236,16 @@ class LoadMonitor:
         self.latest: Optional[LoadSample] = None
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._pid: Optional[int] = None
+        self._pids: List[int] = []
         self._lock = threading.Lock()
 
     def set_pid(self, pid: Optional[int]) -> None:
+        self.set_pids([pid] if pid else [])
+
+    def set_pids(self, pids) -> None:
+        """Processus FFmpeg à mesurer (plusieurs en cas d'encodages en parallèle)."""
         with self._lock:
-            self._pid = pid
+            self._pids = [p for p in pids if p]
 
     def start(self) -> None:
         """(Re)démarre la mesure. Chaque thread a son propre signal d'arrêt : un
@@ -264,9 +268,8 @@ class LoadMonitor:
                 log(f"Compteurs GPU indisponibles : {e}", level="DEBUG")
         use_smi = gpu is None and bool(shutil.which("nvidia-smi"))
         ncpu = (psutil.cpu_count() if psutil else os.cpu_count()) or 1
-        proc = None
-        proc_pid = None
-        warned = False
+        procs: Dict[int, object] = {}
+        warned: set = set()
         if psutil:
             psutil.cpu_percent(None)
         refresh = 0
@@ -276,24 +279,29 @@ class LoadMonitor:
                 if psutil:
                     s.cpu_total = psutil.cpu_percent(None)
                     with self._lock:
-                        pid = self._pid
-                    if pid != proc_pid:
-                        proc_pid, proc, warned = pid, None, False
-                    if pid and proc is None:
-                        # (re)tentative à chaque cycle : le processus peut ne pas être encore visible
+                        pids = list(self._pids)
+                    for gone in [p for p in procs if p not in pids]:
+                        procs.pop(gone, None)
+                    total, measured = 0.0, False
+                    for pid in pids:
+                        pr = procs.get(pid)
+                        if pr is None:
+                            # 1re mesure du processus : pas encore de valeur (retentée à chaque cycle)
+                            try:
+                                pr = psutil.Process(pid)
+                                pr.cpu_percent(None)
+                                procs[pid] = pr
+                            except Exception as e:
+                                if pid not in warned:
+                                    log(f"Mesure CPU du processus {pid} impossible : {e!r}", level="DEBUG")
+                                    warned.add(pid)
+                            continue
                         try:
-                            proc = psutil.Process(pid)
-                            proc.cpu_percent(None)
-                        except Exception as e:
-                            if not warned:
-                                log(f"Mesure CPU du processus {pid} impossible : {e!r}", level="DEBUG")
-                                warned = True
-                            proc = None
-                    elif proc is not None:
-                        try:
-                            s.cpu_proc = min(100.0, proc.cpu_percent(None) / ncpu)
+                            total += pr.cpu_percent(None) / ncpu
+                            measured = True
                         except Exception:
-                            proc = None
+                            procs.pop(pid, None)
+                    s.cpu_proc = min(100.0, total) if measured else None
                 if gpu is not None:
                     # les instances (une par processus) changent : on recrée la requête de temps en temps
                     refresh += 1

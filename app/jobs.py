@@ -115,6 +115,7 @@ def finalize_job_settings(job: EncodeJob, settings: dict, detected_hw: Optional[
     job.deinterlace = bool(settings.get("deinterlace", True))
     job.hardware = resolve_hardware(settings.get("hardware_accel", "none"), detected_hw)
     job.hw_fallback = bool(settings.get("hw_fallback_cpu", True))
+    job.hw_decode = bool(settings.get("hw_decode", True))
     job.low_priority = bool(settings.get("low_priority", True))
     job.dry_run = bool(settings.get("dry_run", False))
 
