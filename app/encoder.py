@@ -32,6 +32,14 @@ from .logger import log
 AC3_BITRATE = "640k"
 # Débits des conversions locales : (stéréo et moins, 5.1)
 LOCAL_AUDIO_BITRATES = {"aac": (192, 384), "ac3": (224, 640), "eac3": (192, 384), "mp3": (192, 192)}
+# Plafond de débit vidéo, en fraction du débit vidéo de la source
+BITRATE_CAP_RATIO = {
+    "h264": {"hevc": 0.60, "h264": 0.85},     # H.264 → H.265 : ~40 % de gain attendu
+    "modern": {"hevc": 0.90, "h264": 1.00},   # HEVC/VP9/AV1 : peu de marge
+    "legacy": {"hevc": 1.00, "h264": 1.00},   # MPEG-2, Xvid, WMV… : jamais plus lourd
+}
+CAP_MIN_KBPS = 300
+NVENC_CQ_OFFSET = {"hevc": 3, "h264": 1}
 KEYFRAME_SECONDS = 2.0          # une image-clé toutes les 2 s
 KEYFRAME_MAX_GAP = 5.0          # au-delà : fichier refusé (vignettes noires, avance rapide lente)
 WORK_DIR = ".ppix-travail"      # dossier de travail ignoré par Plex (.plexignore)
@@ -66,6 +74,7 @@ class EncodeJob:
     audio_target: str = ""              # "" = règles Plex ; copy / aac / ac3 / eac3 / mp3
     audio_layout: str = "keep"          # keep / 5.1 / stereo
     delete_original: bool = False       # supprimer la source après enregistrement vérifié
+    cap_kbps: int = 0                   # plafond vidéo imposé (0 = calculé depuis la source)
     low_priority: bool = True
     container: str = "mp4"
     dry_run: bool = False
@@ -113,6 +122,61 @@ def _popen_flags(low_priority: bool = False) -> int:
     if low_priority:
         flags |= _BELOW_NORMAL
     return flags
+
+
+def _stream_kbps(st: Dict[str, Any]) -> int:
+    """Débit d'une piste : bit_rate, ou étiquette Matroska BPS / BPS-eng."""
+    vals = [st.get("bit_rate")]
+    tags = st.get("tags") or {}
+    vals += [tags.get(k) for k in ("BPS", "BPS-eng", "bps", "BPS-ENG")]
+    for v in vals:
+        try:
+            n = int(float(v))
+            if n > 0:
+                return n // 1000
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def source_video_kbps(info: Dict[str, Any], v0: Optional[Dict[str, Any]] = None) -> int:
+    """Débit vidéo de la source (kb/s), estimé si le conteneur ne l'indique pas."""
+    streams = info.get("streams") or []
+    v0 = v0 if v0 is not None else next((s for s in streams if s.get("codec_type") == "video"), {})
+    k = _stream_kbps(v0) if v0 else 0
+    if k:
+        return k
+    fmt = info.get("format") or {}
+    try:
+        total = int(float(fmt.get("bit_rate") or 0)) // 1000
+    except (TypeError, ValueError):
+        total = 0
+    if not total:
+        try:
+            total = int(float(fmt.get("size")) * 8 / float(fmt.get("duration")) / 1000)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return 0
+    others = 0
+    for s in streams:
+        if s is v0 or s.get("codec_type") not in ("audio", "subtitle"):
+            continue
+        sk = _stream_kbps(s)
+        if not sk and s.get("codec_type") == "audio":
+            sk = 96 * max(1, int(s.get("channels") or 2))   # estimation prudente
+        others += sk
+    return max(0, total - others)
+
+
+def video_bitrate_cap(info: Dict[str, Any], v0: Dict[str, Any], target: str) -> int:
+    """Plafond de débit vidéo pour que le résultat ne soit jamais plus lourd que la source."""
+    src = source_video_kbps(info, v0)
+    if not src:
+        return 0
+    vc = (v0.get("codec_name") or "").lower()
+    family = "h264" if vc in ("h264", "avc", "avc1") else (
+        "modern" if vc in ("hevc", "h265", "vp9", "av1") else "legacy")
+    ratio = BITRATE_CAP_RATIO[family][target if target in ("hevc", "h264") else "hevc"]
+    return max(CAP_MIN_KBPS, int(src * ratio))
 
 
 def is_hdr_stream(v: Dict[str, Any]) -> bool:
@@ -352,7 +416,12 @@ class Encoder:
             w, h = int(v0.get("width") or 0), int(v0.get("height") or 0)
             plan.insert(0, f"vidéo copiée sans réencodage ({vc or '?'} {w}x{h})")
         else:
-            hw = self._video_args(cmd, plan, job, v0, hw, is_hevc, mp4, codec_info)
+            cap = job.cap_kbps or video_bitrate_cap(info, v0, job.codec)
+            if cap:
+                src_k = source_video_kbps(info, v0)
+                plan.append(f"débit vidéo plafonné à {cap} kb/s"
+                            + (f" (source ≈ {src_k} kb/s)" if src_k else "") + " — le fichier ne peut pas grossir")
+            hw = self._video_args(cmd, plan, job, v0, hw, is_hevc, mp4, codec_info, cap)
         self._audio_args(cmd, plan, job, audios, streams, mp4)
 
         # ---------------- sous-titres ----------------
@@ -380,7 +449,7 @@ class Encoder:
 
     @staticmethod
     def _video_args(cmd: List[str], plan: List[str], job: EncodeJob, v0: Dict[str, Any], hw: str,
-                    is_hevc: bool, mp4: bool, codec_info: Dict[str, str]) -> str:
+                    is_hevc: bool, mp4: bool, codec_info: Dict[str, str], cap: int = 0) -> str:
         pix_src = (v0.get("pix_fmt") or "").lower()
         ten_bit = any(t in pix_src for t in ("10le", "10be", "12le", "12be", "p010"))
         hdr = is_hdr_stream(v0)
@@ -418,26 +487,37 @@ class Encoder:
         cmd += ["-pix_fmt", pix_out]
 
         q = int(job.crf)
+        vbv = ["-maxrate", f"{cap}k", "-bufsize", f"{cap * 2}k"] if cap else []
         if hw == "none":
             crf = q if is_hevc else max(0, q - 4)   # x264 donne une qualité équivalente ~4 points plus bas
             cmd += ["-crf", str(crf), "-preset", job.preset or "medium"]
             if is_hevc:
                 # GOP fermé : chaque image-clé est un vrai point de départ (vieux décodeurs TV)
-                cmd += ["-x265-params", f"log-level=error:keyint={gop}:min-keyint={max(1, gop // 2)}:open-gop=0"]
+                x265 = f"log-level=error:keyint={gop}:min-keyint={max(1, gop // 2)}:open-gop=0"
+                if cap:
+                    x265 += f":vbv-maxrate={cap}:vbv-bufsize={cap * 2}"
+                cmd += ["-x265-params", x265]
             else:
-                cmd += ["-profile:v", "high", "-keyint_min", str(max(1, gop // 2))]
+                cmd += ["-profile:v", "high", "-keyint_min", str(max(1, gop // 2))] + vbv
         elif hw == "nvenc":
-            cq = q if is_hevc else max(0, q - 2)
+            # NVENC compresse moins bien que x265/x264 à chiffre égal : décalage pour une taille comparable
+            cq = q + NVENC_CQ_OFFSET["hevc" if is_hevc else "h264"]
             cmd += ["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", str(cq),
-                    "-b:v", "0", "-spatial-aq", "1"]
+                    "-b:v", "0", "-spatial-aq", "1"] + vbv
             if keep_10bit:
                 cmd += ["-profile:v", "main10"]
         elif hw == "qsv":
-            cmd += ["-global_quality", str(q), "-preset", "medium"]
+            if cap:
+                cmd += ["-b:v", f"{int(cap * 0.75)}k"] + vbv + ["-preset", "medium"]
+            else:
+                cmd += ["-global_quality", str(q), "-preset", "medium"]
         elif hw == "amf":
-            cmd += ["-quality", "balanced", "-rc", "cqp", "-qp_i", str(q), "-qp_p", str(q + 2)]
-            if not is_hevc:
-                cmd += ["-qp_b", str(q + 4)]
+            if cap:
+                cmd += ["-quality", "balanced", "-rc", "vbr_peak", "-b:v", f"{int(cap * 0.75)}k"] + vbv
+            else:
+                cmd += ["-quality", "balanced", "-rc", "cqp", "-qp_i", str(q), "-qp_p", str(q + 2)]
+                if not is_hevc:
+                    cmd += ["-qp_b", str(q + 4)]
 
         for key, opt in (("color_primaries", "-color_primaries"),
                          ("color_transfer", "-color_trc"),

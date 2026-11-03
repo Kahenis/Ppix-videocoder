@@ -15,7 +15,7 @@ from pathlib import Path, PurePath
 from typing import Callable, Dict, List, Optional
 
 from .config import reverse_path_map
-from .encoder import KEYFRAME_MAX_GAP, Encoder
+from .encoder import KEYFRAME_MAX_GAP, Encoder, _stream_kbps
 from .logger import log
 from .plex_client import PlexClient, VideoInfo
 from .posters import extract_poster
@@ -37,6 +37,38 @@ class ConvertedFile:
     size: int = 0
     keyframe_gap: Optional[float] = None
     in_plex: bool = False
+    original_size: int = 0        # taille de l'original avant conversion (historique)
+    source_codec: str = ""        # codec de l'original (historique, ou deviné depuis le nom)
+    audio_kbps: int = 0           # débit audio actuel (pour calculer le plafond vidéo)
+    plex_codec: str = ""          # codec affiché par Plex
+
+    @property
+    def grew(self) -> bool:
+        """Plus gros que l'original d'avant conversion (versions ≤ 1.7.0 avec NVENC)."""
+        return bool(self.exists and self.original_size and self.size > self.original_size * 1.02)
+
+    @property
+    def needs_attention(self) -> bool:
+        return self.needs_reencode or self.grew
+
+    @property
+    def size_label(self) -> str:
+        if not self.exists or not self.size:
+            return "–"
+        if not self.original_size:
+            return f"{self.size / 1024 ** 3:.2f} Go"
+        pct = (self.size / self.original_size - 1) * 100
+        return f"{self.size / 1024 ** 3:.2f} Go ({'+' if pct >= 0 else '−'}{abs(pct):.0f} %)" + (" ⚠" if self.grew else "")
+
+    def cap_kbps(self) -> int:
+        """Plafond vidéo pour revenir sous la taille d'origine (H.264 → H.265 : 60 %)."""
+        if not (self.original_size and self.duration):
+            return 0
+        orig_total = self.original_size * 8 / self.duration / 1000
+        orig_video = max(0.0, orig_total - self.audio_kbps)
+        src = (self.source_codec or "").lower()
+        ratio = 0.60 if src in ("h264", "avc", "avc1") else 0.85
+        return max(300, int(orig_video * ratio))
 
     @property
     def name(self) -> str:
@@ -84,7 +116,9 @@ def analyze_converted(plex: PlexClient, encoder: Encoder, settings: dict, histor
             break
         local = e.get("file") or ""
         cf = ConvertedFile(local_path=local, plex_path=e.get("plex_path") or reverse_path_map(local, settings),
-                           library=e.get("library") or "", rating_key=str(e.get("rating_key") or ""))
+                           library=e.get("library") or "", rating_key=str(e.get("rating_key") or ""),
+                           original_size=int(e.get("original_size") or 0),
+                           source_codec=e.get("source_codec") or guess_codec_from_name(local))
         if progress:
             progress(i, len(entries), f"Analyse de {cf.name}…")
         item = plex.lookup(index, cf.plex_path) if index else None
@@ -93,6 +127,9 @@ def analyze_converted(plex: PlexClient, encoder: Encoder, settings: dict, histor
             cf.rating_key = str(item.ratingKey)
             cf.library = getattr(item, "librarySectionTitle", "") or cf.library
             cf.library_type = "show" if getattr(item, "type", "") == "episode" else "movie"
+            for m in getattr(item, "media", None) or []:
+                cf.plex_codec = (getattr(m, "videoCodec", "") or "").lower()
+                break
         if cf.library:
             cf.personal = plex.is_personal_library(cf.library)
         cf.exists = os.path.exists(local)
@@ -103,11 +140,22 @@ def analyze_converted(plex: PlexClient, encoder: Encoder, settings: dict, histor
             cf.width, cf.height = int(v.get("width") or 0), int(v.get("height") or 0)
             cf.duration = encoder.probe_duration(info)
             cf.size = os.path.getsize(local)
+            cf.audio_kbps = sum(_stream_kbps(s) or 96 * int(s.get("channels") or 2)
+                                for s in info.get("streams") or [] if s.get("codec_type") == "audio")
             cf.keyframe_gap = encoder.keyframe_max_gap(local, cf.duration)
         out.append(cf)
     if progress:
         progress(len(entries), len(entries) or 1, f"{len(out)} fichier(s) analysé(s)")
     return out
+
+
+def guess_codec_from_name(path: str) -> str:
+    low = path.lower()
+    if any(k in low for k in ("x264", "h264", "h.264", "avc")):
+        return "h264"
+    if any(k in low for k in ("x265", "h265", "h.265", "hevc")):
+        return "hevc"
+    return ""
 
 
 def video_info_for(cf: ConvertedFile) -> VideoInfo:
