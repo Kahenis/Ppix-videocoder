@@ -184,6 +184,24 @@ class JobQueue:
             self._jobs.insert(k, self._jobs.pop(i))
         self._changed()
 
+    def move_many(self, jobs: List[EncodeJob], delta: int) -> bool:
+        """Monte (-1) ou descend (+1) plusieurs fichiers d'un cran, en gardant leur ordre.
+        Un bloc collé en haut (ou en bas) ne bouge pas."""
+        moved = False
+        with self._lock:
+            ids = {id(j) for j in jobs}
+            order = range(len(self._jobs)) if delta < 0 else range(len(self._jobs) - 1, -1, -1)
+            for i in order:
+                if id(self._jobs[i]) not in ids:
+                    continue
+                k = i + (-1 if delta < 0 else 1)
+                if 0 <= k < len(self._jobs) and id(self._jobs[k]) not in ids:
+                    self._jobs[i], self._jobs[k] = self._jobs[k], self._jobs[i]
+                    moved = True
+        if moved:
+            self._changed()
+        return moved
+
     def next_pending(self) -> Optional[EncodeJob]:
         with self._lock:
             for j in self._jobs:

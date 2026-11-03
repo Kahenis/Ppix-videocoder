@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 KEYRING_SERVICE = "Ppix-Videocoder"
 KEYRING_USER = "plex-token"
