@@ -77,4 +77,4 @@ def test_migration_v15_audio_channels():
     import json
     c.get_settings_path().write_text(json.dumps({"audio_channels": 2, "crf": 22}), encoding="utf-8")
     s = c.load_settings()
-    assert s["audio_channels"] == 0 and s["crf"] == 22 and s["settings_version"] == 2
+    assert s["audio_channels"] == 0 and s["crf"] == 22 and s["settings_version"] == 3 and s["skip_if_bigger"]

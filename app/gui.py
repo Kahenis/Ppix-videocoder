@@ -1,6 +1,7 @@
 """Main GUI for Ppix-Videocoder – theme PPIX."""
 from __future__ import annotations
 
+import gc
 import os
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from .about_dialog import show_about
 from .config import (
     APP_NAME, APP_VERSION, AUDIO_BITRATE_OPTIONS, AUDIO_CHANNEL_OPTIONS, CODEC_CHOICE_LABELS,
     HARDWARE_OPTIONS, HARDWARE_SHORT, HEAVY_H264_OPTIONS, MIN_KEEP_OPTIONS, PRESETS,
-    QUALITY_OPTIONS, SUPPORTED_CODECS, guess_plex_prefix, replace_extension, resolve_output_container, load_history, load_settings,
+    QUALITY_OPTIONS, SUPPORTED_CODECS, guess_plex_prefix, normalize_codec, replace_extension, resolve_output_container, load_history, load_settings,
     path_exists_for_open, save_history, save_settings,
 )
 from .dialogs import ask_network_root_before_scan, confirm
@@ -91,6 +92,11 @@ class App(ctk.CTk):
         self._filter_after: Optional[str] = None
         self._shutdown_var = ctk.BooleanVar(master=self, value=False)
         self._shutdown_flag = False
+        self._decision_lock = threading.Lock()
+        # Ramasse-miettes exécuté dans le thread de l'interface uniquement : libérer un
+        # objet Tk (police, variable) depuis le thread d'encodage peut le bloquer.
+        gc.disable()
+        self._gc_ticks = 0
         self.monitor = LoadMonitor(interval=1.5)
         self.cpu_name = "processeur"
         self.gpu_list: List[str] = []
@@ -118,6 +124,10 @@ class App(ctk.CTk):
     def _drain(self):
         if self._closing:
             return
+        self._gc_ticks += 1
+        if self._gc_ticks >= 60:          # ~5 s
+            self._gc_ticks = 0
+            gc.collect()
         with self._ui_lock:
             batch, self._ui_queue = self._ui_queue[:], []
         for fn, a, k in batch:
@@ -177,6 +187,7 @@ class App(ctk.CTk):
                 self.encoder.keep_both(job)
                 self._record_history(job)
         self._closing = True
+        gc.enable()
         try:
             self.quit()
         except Exception:
@@ -892,17 +903,19 @@ class App(ctk.CTk):
                              ("↓", lambda j=job: self.queue.move(j, 1)),
                              ("✕", lambda j=job: self._remove_job(j))):
                 ctk.CTkButton(btns, text=txt, width=30, height=24, fg_color="#333", command=cmd).pack(side="left", padx=1)
-        elif job.status == "done":
+        elif job.status == "done" and not job.local and not getattr(job, "_claimed", False):
             ctk.CTkButton(btns, text="Remplacer", width=86, height=24, fg_color=DANGER, hover_color=DANGER_HOVER,
                           command=lambda j=job: self._decide(j, "replace")).pack(side="left", padx=1)
             ctk.CTkButton(btns, text="Garder les 2", width=90, height=24, fg_color="#333",
                           command=lambda j=job: self._decide(j, "keep")).pack(side="left", padx=1)
             ctk.CTkButton(btns, text="Jeter", width=56, height=24, fg_color="#333",
                           command=lambda j=job: self._decide(j, "discard")).pack(side="left", padx=1)
-        elif job.is_finished:
+        elif job.is_finished and job.status != "done":
             ctk.CTkButton(btns, text="✕", width=30, height=24, fg_color="#333",
                           command=lambda j=job: self.queue.remove(j)).pack(side="left", padx=1)
         status = STATUS_LABELS.get(job.status, job.status)
+        if job.status == "done" and (job.local or getattr(job, "_claimed", False)):
+            status = "finalisation…"
         detail = job.message if job.status != "pending" else ""
         lbl = ctk.CTkLabel(row, text=f"{status}" + (f" — {detail}" if detail else ""), anchor="w",
                            justify="left", wraplength=1050, text_color=STATUS_COLORS.get(job.status, MUTED))
@@ -1004,6 +1017,25 @@ class App(ctk.CTk):
             if self._shutdown_flag and not stopped_by_user and os.name == "nt":
                 self._ui(self._schedule_shutdown)
 
+    def _claim(self, job: EncodeJob) -> bool:
+        """Un seul traitement par fichier encodé (auto, bouton, « tout remplacer »)."""
+        with self._decision_lock:
+            if job.status != "done" or getattr(job, "_claimed", False):
+                return False
+            job._claimed = True  # type: ignore[attr-defined]
+            return True
+
+    def _is_bigger(self, job: EncodeJob) -> bool:
+        return bool(self.settings.get("skip_if_bigger", True)) and job.output_size >= job.original_size > 0
+
+    def _discard_bigger(self, job: EncodeJob, name: str):
+        self.encoder.discard_output(job)
+        job.status = "discarded"
+        job.message = (f"Résultat plus gros que l'original ({_fmt_size(job.output_size)} ≥ "
+                       f"{_fmt_size(job.original_size)}) — écarté, original conservé.")
+        self._ui(self._log, f"{name} : {job.message}", "WARN")
+        self._record_history(job)
+
     def _after_encode(self, job: EncodeJob):
         name = Path(job.final_path or job.video_path).name
         if job.status == "error":
@@ -1012,6 +1044,11 @@ class App(ctk.CTk):
         elif job.status == "simulated":
             self._ui(self._log, f"[essai] {name} : " + " | ".join(job.plan))
         elif job.status == "done" and job.local:
+            if not self._claim(job):
+                return
+            if self._is_bigger(job):
+                self._discard_bigger(job, name)
+                return
             if self.encoder.save_local(job, keep_backup=bool(self.settings.get("keep_backup"))):
                 g = job.gain_ratio * 100
                 self._ui(self._log, f"{name} : {job.message} ({'−' if g >= 0 else '+'}{abs(g):.0f} %)")
@@ -1021,27 +1058,24 @@ class App(ctk.CTk):
                 self.encoder.discard_output(job, quiet=True)
             self._record_history(job)
         elif job.status == "done":
-            if self.settings.get("skip_if_bigger") and job.output_size >= job.original_size:
-                self.encoder.discard_output(job)
-                job.status = "discarded"
-                job.message = (f"Résultat plus gros que l'original ({_fmt_size(job.output_size)} ≥ "
-                               f"{_fmt_size(job.original_size)}) — écarté, original conservé.")
-                self._ui(self._log, f"{name} : {job.message}", "WARN")
-                self._record_history(job)
+            if self._is_bigger(job):
+                if self._claim(job):
+                    self._discard_bigger(job, name)
             elif self.settings.get("auto_replace"):
-                self._do_replace(job)
+                if self._claim(job):
+                    self._do_replace(job)
             else:
                 self._ui(self._log, f"{name} encodé ({job.message}) — à valider dans « 3. Encoder ».")
 
     def _decide(self, job: EncodeJob, action: str):
-        if job.status != "done":
+        if job.local or not self._claim(job):
             return
-        job.status = "running"  # verrou visuel pendant l'opération réseau
         job.message = "Opération en cours…"
+        job._busy = True  # type: ignore[attr-defined]
         self._render_queue()
 
         def work():
-            job.status = "done"
+            job._busy = False  # type: ignore[attr-defined]
             if action == "replace":
                 self._do_replace(job)
             elif action == "keep":
@@ -1057,7 +1091,8 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
 
     def _replace_all_done(self):
-        jobs = [j for j in self.queue.snapshot() if j.status == "done"]
+        jobs = [j for j in self.queue.snapshot() if j.status == "done" and not j.local
+                and not getattr(j, "_claimed", False)]
         if not jobs:
             self._log("Aucun fichier à valider.")
             return
@@ -1065,7 +1100,7 @@ class App(ctk.CTk):
         def go():
             def work():
                 for j in jobs:
-                    if j.status == "done":
+                    if self._claim(j):
                         self._do_replace(j)
                         self._ui(self._on_queue_changed)
             threading.Thread(target=work, daemon=True).start()
@@ -1086,6 +1121,8 @@ class App(ctk.CTk):
             try:
                 what = self.plex.refresh_after_replace(job.rating_key, job.library, plex_folder_of(job), ext_changed)
                 self._ui(self._log, f"Plex : {what} pour {Path(job.final_path).name}")
+                if not job.audio_only and job.plex_path:
+                    self._verify_plex_codec(job, ext_changed)
             except Exception as ex:
                 self._ui(self._log, f"Plex refresh: {ex}", "WARN")
         g = job.gain_ratio * 100
@@ -1103,6 +1140,27 @@ class App(ctk.CTk):
                     self._ui(self._log, f"Plex : {msg} ({Path(final).name})")
             threading.Thread(target=poster, daemon=True).start()
 
+    def _verify_plex_codec(self, job: EncodeJob, ext_changed: bool):
+        """En arrière-plan : contrôle que Plex affiche le nouveau codec (relance sinon)."""
+        new_plex = (replace_extension(job.plex_path, Path(job.final_path).suffix)
+                    if ext_changed else job.plex_path)
+        name = Path(job.final_path).name
+        codec, lib, rk = job.codec, job.library, "" if ext_changed else job.rating_key
+
+        def work():
+            try:
+                res = self.plex.verify_codec(new_plex, lib, rk, codec)
+            except Exception as e:
+                log(f"Vérification du codec dans Plex : {e}", level="WARN")
+                return
+            label = {"hevc": "H.265", "h264": "H.264"}.get(codec, codec)
+            if res == "ok":
+                self._ui(self._log, f"Plex : {name} affiché en {label}.")
+            elif res == "relancé":
+                self._ui(self._log, f"Plex affiche encore l'ancien codec pour {name} : analyse relancée. "
+                                    "Utilisez « Actualiser Plex » dans « Déjà convertis… » si besoin.", "WARN")
+        threading.Thread(target=work, daemon=True).start()
+
     def _record_history(self, job: EncodeJob):
         if getattr(job, "_history_saved", False):
             return
@@ -1116,6 +1174,7 @@ class App(ctk.CTk):
             "plex_path": (replace_extension(job.plex_path, Path(job.final_path).suffix)
                           if job.status == "replaced" and job.plex_path and job.final_path else job.plex_path),
             "rating_key": job.rating_key, "library": job.library, "local": job.local,
+            "source_codec": (getattr(getattr(job, "_video_info", None), "video_codec", "") or ""),
         })
         save_history(self.history)
 
@@ -1386,15 +1445,16 @@ class App(ctk.CTk):
         d = ctk.CTkToplevel(self)
         self._repair_win = d
         d.title("Fichiers déjà convertis")
-        d.geometry("1000x620")
+        d.geometry("1120x640")
         d.configure(fg_color=BG)
         d.transient(self)
         d.after(150, d.lift)
         ctk.CTkLabel(d, text="Fichiers déjà convertis", font=ctk.CTkFont(size=16, weight="bold"),
                      text_color=ACCENT).pack(anchor="w", padx=16, pady=(12, 2))
-        ctk.CTkLabel(d, text=("Les versions précédentes ne plaçaient pas assez d'images-clés : vignettes Plex "
-                              "noires et avance rapide lente. Cochez les fichiers marqués ⚠ puis « Réencoder », "
-                              "et/ou « Réparer les affiches » (vidéos perso)."),
+        ctk.CTkLabel(d, text=("Fichiers marqués ⚠ : trop peu d'images-clés (vignettes Plex noires) ou devenus plus "
+                              "gros que l'original. « Réencoder » les remet dans la file (plafonnés sous la taille "
+                              "d'origine), « Réparer les affiches » corrige les vidéos perso, « Actualiser Plex » "
+                              "redemande l'analyse quand Plex affiche encore l'ancien codec."),
                      text_color=MUTED, wraplength=960, justify="left").pack(anchor="w", padx=16)
         bar = ctk.CTkFrame(d, fg_color=BG)
         bar.pack(fill="x", padx=12, pady=8)
@@ -1418,19 +1478,28 @@ class App(ctk.CTk):
             for cf in state["files"]:
                 row = ctk.CTkFrame(lst, fg_color=CARD, corner_radius=6)
                 row.pack(fill="x", padx=6, pady=2)
-                var = ctk.BooleanVar(master=d, value=cf.needs_reencode)
+                var = ctk.BooleanVar(master=d, value=cf.needs_attention)
                 state["vars"][cf.local_path] = var
                 ctk.CTkCheckBox(row, text="", variable=var, width=28, fg_color=ACCENT,
                                 state="normal" if cf.exists else "disabled").pack(side="left", padx=6, pady=4)
-                ctk.CTkLabel(row, text=cf.name[:60], width=380, anchor="w", text_color=TEXT).pack(side="left")
+                ctk.CTkLabel(row, text=cf.name[:52], width=330, anchor="w", text_color=TEXT).pack(side="left")
                 res = f"{cf.video_codec or '?'} {cf.height}p" if cf.height else (cf.video_codec or "?")
-                ctk.CTkLabel(row, text=res, width=100, anchor="w", text_color=MUTED).pack(side="left")
-                ctk.CTkLabel(row, text=f"images-clés : {cf.keyframe_label}", width=160, anchor="w",
+                ctk.CTkLabel(row, text=res, width=90, anchor="w", text_color=MUTED).pack(side="left")
+                ctk.CTkLabel(row, text=f"images-clés : {cf.keyframe_label}", width=140, anchor="w",
                              text_color=WARN if cf.needs_reencode else (MUTED if cf.exists else ERR)).pack(side="left")
-                plex_txt = ("Plex (perso)" if cf.personal else "Plex") if cf.in_plex else "absent de Plex"
-                ctk.CTkLabel(row, text=plex_txt, width=120, anchor="w", text_color=MUTED).pack(side="left")
-            n_bad = sum(1 for f in state["files"] if f.needs_reencode)
-            status.configure(text=f"{len(state['files'])} fichier(s) · {n_bad} avec trop peu d'images-clés")
+                ctk.CTkLabel(row, text=cf.size_label, width=130, anchor="w",
+                             text_color=WARN if cf.grew else MUTED).pack(side="left")
+                if cf.in_plex:
+                    stale = cf.video_codec and cf.plex_codec and normalize_codec(cf.plex_codec) != normalize_codec(cf.video_codec)
+                    plex_txt = f"Plex : {cf.plex_codec or '?'}" + (" ⚠" if stale else "")
+                    col = WARN if stale else MUTED
+                else:
+                    plex_txt, col = "absent de Plex", MUTED
+                ctk.CTkLabel(row, text=plex_txt, width=120, anchor="w", text_color=col).pack(side="left")
+            n_kf = sum(1 for f in state["files"] if f.needs_reencode)
+            n_big = sum(1 for f in state["files"] if f.grew)
+            status.configure(text=f"{len(state['files'])} fichier(s) · {n_kf} avec trop peu d'images-clés · "
+                                  f"{n_big} plus gros que l'original")
 
         def selected():
             return [cf for cf in state["files"] if cf.exists and state["vars"].get(cf.local_path)
@@ -1470,6 +1539,8 @@ class App(ctk.CTk):
             for cf in sel:
                 job = make_job_for_video(video_info_for(cf), self.settings,
                                          self.settings.get("preferred_codec", "hevc"))
+                if cf.grew:
+                    job.cap_kbps = cf.cap_kbps()   # revenir sous la taille d'avant conversion
                 if self.queue.add(job):
                     n += 1
             self._log(f"{n} fichier(s) ajouté(s) à la file pour réencodage (image-clé toutes les 2 s).")
@@ -1504,17 +1575,48 @@ class App(ctk.CTk):
                 self._ui(self._log, txt)
             threading.Thread(target=work, daemon=True).start()
 
+        def refresh_plex():
+            sel = [cf for cf in selected() if cf.in_plex]
+            if not sel:
+                status.configure(text="Aucun fichier coché présent dans Plex.")
+                return
+            if state["busy"]:
+                return
+            state["busy"] = True
+
+            def work():
+                ok = 0
+                for i, cf in enumerate(sel):
+                    if stop.is_set():
+                        break
+                    self._ui(lambda c=cf, k=i: status.winfo_exists() and status.configure(
+                        text=f"Plex {k + 1}/{len(sel)} : {c.name}…"))
+                    self.plex.analyze_item(cf.rating_key)
+                    res = self.plex.verify_codec(cf.plex_path, cf.library, cf.rating_key,
+                                                 cf.video_codec or "hevc", timeout=60, poll=5)
+                    if res == "ok":
+                        ok += 1
+                        cf.plex_codec = cf.video_codec
+                state["busy"] = False
+                txt = f"Plex à jour pour {ok}/{len(sel)} fichier(s)."
+                if ok < len(sel):
+                    txt += " Les autres sont en cours d'analyse côté Plex : réessayez dans quelques minutes."
+                self._ui(lambda: status.winfo_exists() and (render(), status.configure(text=txt)))
+                self._ui(self._log, txt)
+            threading.Thread(target=work, daemon=True).start()
+
         def toggle_flagged():
             for cf in state["files"]:
                 v = state["vars"].get(cf.local_path)
                 if v is not None:
-                    v.set(cf.needs_reencode)
+                    v.set(cf.needs_attention)
 
         for txt, cmd, color in (("Analyser", analyze, "#333"),
                                 ("Cocher les ⚠", toggle_flagged, "#333"),
                                 ("Tout cocher", lambda: [v.set(True) for v in state["vars"].values()], "#333"),
                                 ("Réencoder la sélection", reencode, ACCENT),
-                                ("Réparer les affiches (sélection)", posters, ACCENT)):
+                                ("Réparer les affiches (sélection)", posters, ACCENT),
+                                ("Actualiser Plex", refresh_plex, "#333")):
             ctk.CTkButton(bar, text=txt, fg_color=color, text_color="#111" if color == ACCENT else TEXT,
                           hover_color=ACCENT_HOVER if color == ACCENT else "#444",
                           command=cmd).pack(side="left", padx=4)
@@ -1522,7 +1624,8 @@ class App(ctk.CTk):
         prog.set(0)
         status.pack(fill="x", padx=16, pady=4)
         lst.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self._repair_actions = {"analyze": analyze, "reencode": reencode, "posters": posters}
+        self._repair_actions = {"analyze": analyze, "reencode": reencode, "posters": posters,
+                                "refresh_plex": refresh_plex}
         analyze()
 
     # ------------------------------------------------------------------

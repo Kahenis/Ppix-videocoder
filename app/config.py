@@ -62,12 +62,12 @@ DEFAULT_SETTINGS = {
     "keep_audio_copy": True, "keep_subtitles": True, "deinterlace": True,
     "hardware_accel": "auto", "hw_fallback_cpu": True, "container": "mp4",
     "mkv_for_legacy": True, "dry_run": False, "refresh_plex_after": True,
-    "keep_backup": False, "skip_if_bigger": False, "heavy_h264_mbps": 0,
+    "keep_backup": False, "skip_if_bigger": True, "heavy_h264_mbps": 0,
     "low_priority": True, "prevent_sleep": True, "audio_only_truehd": False, "fix_posters": True, "last_local_dir": "",
     "network_root": "", "plex_prefix": "", "path_maps": [],
     "network_root_asked": False, "detected_hw": "",
     "server_url": "", "token": "", "token_in_keyring": False, "last_server_name": "",
-    "settings_version": 2,
+    "settings_version": 3,
 }
 
 
@@ -157,9 +157,13 @@ def load_settings() -> dict:
     out.update({k: v for k, v in data.items() if k in DEFAULT_SETTINGS})
     # Migration v1.5 → v1.6 : l'ancien défaut "audio_channels=2" écrasait le 5.1
     # sans que l'option existe dans l'interface → on repasse en "conserver".
-    if int(data.get("settings_version", 1)) < 2:
+    version = int(data.get("settings_version", 1))
+    if version < 2:
         out["audio_channels"] = 0
-        out["settings_version"] = 2
+    if version < 3:
+        # v1.7 : un résultat plus gros que l'original est écarté par défaut
+        out["skip_if_bigger"] = True
+    out["settings_version"] = 3
     if out.get("token_in_keyring") and not out.get("token"):
         tok = _keyring_get()
         out["token"] = tok

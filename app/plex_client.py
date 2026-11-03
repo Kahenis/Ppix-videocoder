@@ -379,6 +379,63 @@ class PlexClient:
                 log(f"Analyze {rating_key}: {e}", level="WARN")
         return ", ".join(done) or "aucune action"
 
+    def plex_video_codec(self, item) -> str:
+        try:
+            item.reload()
+        except Exception:
+            pass
+        for m in getattr(item, "media", None) or []:
+            c = normalize_codec(getattr(m, "videoCodec", "") or "")
+            if c:
+                return c
+        return ""
+
+    def analyze_item(self, rating_key: str) -> bool:
+        if not self.server or not rating_key:
+            return False
+        try:
+            self.server.query(f"/library/metadata/{rating_key}/analyze", method=self.server._session.put)
+            return True
+        except Exception as e:
+            log(f"Analyze {rating_key}: {e}", level="WARN")
+            return False
+
+    def verify_codec(self, plex_path: str, library: str, rating_key: str, expected: str,
+                     timeout: float = 180, poll: float = 10, sleep=time.sleep) -> str:
+        """Vérifie que Plex affiche le nouveau codec ; relance l'analyse s'il garde l'ancien.
+
+        Retourne : « ok », « relancé » (analyse redemandée, toujours l'ancien codec),
+        « introuvable » ou « non connecté ».
+        """
+        if not self.server:
+            return "non connecté"
+        expected = normalize_codec(expected)
+        deadline = time.time() + timeout
+        retried = False
+        last = ""
+        while True:
+            item = self.find_item_by_file(plex_path, library, rating_key)
+            if item is not None:
+                last = self.plex_video_codec(item)
+                if last == expected:
+                    return "ok"
+                if not retried and time.time() > deadline - timeout / 2:
+                    # Plex a gardé l'ancienne fiche : nouvelle analyse + actualisation forcée
+                    self.analyze_item(str(item.ratingKey))
+                    try:
+                        self.server.query(f"/library/metadata/{item.ratingKey}/refresh",
+                                          method=self.server._session.put, params={"force": 1})
+                    except Exception as e:
+                        log(f"Refresh {item.ratingKey}: {e}", level="DEBUG")
+                    retried = True
+            if time.time() >= deadline:
+                break
+            sleep(poll)
+        if item is None:
+            return "introuvable"
+        log(f"Plex affiche toujours « {last or '?'} » pour {plex_path} (attendu {expected})", level="WARN")
+        return "relancé"
+
     # ------------------------------------------------------------------
     # Affiches des vidéos personnelles
     # ------------------------------------------------------------------

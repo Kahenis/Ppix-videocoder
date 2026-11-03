@@ -31,6 +31,7 @@ class FakePlex:
         self.last_error = ""
         self.refreshed = []
         self.posters = []
+        self.verified = []
         self._root = root
         self._videos = [
             VideoInfo(rating_key=str(i), title=f.stem, library="Films", library_type="movie",
@@ -54,6 +55,13 @@ class FakePlex:
 
     def web_url_for(self, rk):
         return ""
+
+    def verify_codec(self, path, library, rk, expected, **kw):
+        self.verified.append((path, expected))
+        return "ok"
+
+    def analyze_item(self, rk):
+        return True
 
     # --- affiches (vidéos perso) ---
     def is_personal_library(self, lib):
@@ -139,6 +147,7 @@ def test_full_workflow(tmp_path):
             "Film0.mkv", "Film1.avi", "Film1.optimized.mkv", "Film2.avi", "Film3.avi"]
         assert app.plex.refreshed == [("0", "Films", "/volume1/Media/Films", True)]
         assert pump(app, lambda: len(app.plex.posters) >= 1, 60)
+        assert pump(app, lambda: ("/volume1/Media/Films/Film0.mkv", "hevc") in app.plex.verified, 30)
         assert app.plex.posters[0] == ("/volume1/Media/Films/Film0.mkv", False)   # vraie image, pas du noir
         assert [v.title for v in app.videos] == ["Film2", "Film3"]   # retirés du scan
         assert {h["status"] for h in app.history} == {"replaced", "kept", "discarded"}
@@ -200,7 +209,8 @@ def test_full_workflow(tmp_path):
 
         # Mode « Audio seule » : case sur la page Scanner + conversion TrueHD → AC3
         from tests.conftest import make_truehd, probe
-        app.settings.update(preset="medium", auto_replace=False)
+        # (TrueHD synthétique minuscule : l'AC3 640k est plus gros ; vrai TrueHD = bien plus lourd)
+        app.settings.update(preset="medium", auto_replace=False, skip_if_bigger=False)
         app._show_page("scan")
         app.audio_only_var.set(True)
         app._on_audio_only_toggle()

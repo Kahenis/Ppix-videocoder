@@ -53,6 +53,7 @@ Les réglages (token, chemins réseau, historique) sont conservés entre les ver
 | Images-clés | Une image-clé toutes les 2 s (vignettes Plex correctes, avance rapide fluide, ExoPlayer), contrôlée avant remplacement |
 | Vidéos perso | Affiche Plex créée à partir d'une vraie image de la vidéo ; outil « Fichiers déjà convertis » pour réparer les affiches noires et réencoder les anciens fichiers |
 | Suivi | Pendant l'encodage : qui travaille (carte graphique et moteur NVENC/Quick Sync/AMF, ou processeur), % CPU total et de l'encodage, % GPU et de l'encodeur vidéo |
+| Taille | Débit vidéo plafonné d'après la source (H.264 → H.265 : 60 % au plus) : le résultat ne peut pas être plus lourd ; s'il l'est quand même, il est écarté et l'original gardé |
 | Fichier local | Bouton « Parcourir local… » : conversion d'un fichier du disque ou du réseau hors Plex (H.265/H.264, audio conservé/AAC/AC3/E-AC3/MP3 en 5.1 ou stéréo, destination au choix — par défaut le fichier d'origine, remplacé après vérification) |
 | Confort | Priorité basse, PC maintenu éveillé, arrêt du PC en fin de file (option) |
 

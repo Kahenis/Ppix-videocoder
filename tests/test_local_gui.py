@@ -84,3 +84,35 @@ def test_local_wizard(tmp_path, monkeypatch):
         assert sorted(p.name for p in tmp_path.iterdir() if p.is_file()) == ["Anniv.mkv", "Mariage.avi"]
     finally:
         app._close()
+
+
+def test_bigger_local_result_discarded_and_single_claim(tmp_path):
+    from app.gui import App
+    from app.jobs import make_local_job
+    from app.encoder import EncodeJob
+    import gc
+
+    src = tmp_path / "Petit.mp4"
+    src.write_bytes(b"x" * 1000)
+    work = tmp_path / ".ppix-travail"
+    work.mkdir()
+    out = work / "Petit.mp4.mp4"
+    out.write_bytes(b"y" * 5000)
+    app = App()
+    try:
+        assert not gc.isenabled()                     # ramasse-miettes réservé au thread de l'interface
+        assert app.settings["skip_if_bigger"] is True
+        job = make_local_job(str(src), "hevc", "copy", "keep", str(src))
+        job.status, job.output_path, job.original_size, job.output_size = "done", str(out), 1000, 5000
+        app._after_encode(job)
+        assert job.status == "discarded" and src.read_bytes() == b"x" * 1000 and not out.exists()
+
+        # deux décisions simultanées : une seule est exécutée
+        j2 = EncodeJob(str(src), output_path=str(out), final_path=str(src), status="done")
+        assert app._claim(j2) is True
+        assert app._claim(j2) is False
+        app._decide(j2, "discard")                    # déjà pris : ignoré
+        assert j2.status == "done"
+    finally:
+        app._close()
+    assert gc.isenabled()
