@@ -23,7 +23,7 @@ from .config import (
     path_exists_for_open, save_history, save_settings,
 )
 from .dialogs import ask_network_root_before_scan, confirm
-from .encoder import EncodeJob, Encoder
+from .encoder import HWDEC_LABEL, EncodeJob, Encoder
 from .jobs import (
     JobQueue, finalize_job_settings, make_job_for_video, plex_folder_of, resolve_local_path,
 )
@@ -93,6 +93,10 @@ class App(ctk.CTk):
         self._shutdown_var = ctk.BooleanVar(master=self, value=False)
         self._shutdown_flag = False
         self._decision_lock = threading.Lock()
+        self._history_lock = threading.Lock()
+        self._encoders: List[Encoder] = []
+        self._pids: Dict[int, int] = {}
+        self._stopped_by_user = False
         self._qsel: set = set()          # file d'encodage : id des lignes sélectionnées
         self._qanchor: Optional[int] = None
         # Ramasse-miettes exécuté dans le thread de l'interface uniquement : libérer un
@@ -181,10 +185,7 @@ class App(ctk.CTk):
         self._pin_stop.set()
         self._scan_stop.set()
         self.queue_running = False
-        try:
-            self.encoder.stop()
-        except Exception:
-            pass
+        self._stop_all_encoders()
         if self._worker and self._worker.is_alive():
             self._worker.join(timeout=10)
         for job in self.queue.snapshot():
@@ -1079,6 +1080,10 @@ class App(ctk.CTk):
             return "Préparation…"
         who = describe_worker(job.hw_used, job.hw_requested, job.codec, job.audio_only,
                               self.cpu_name, self.gpu_list)
+        if job.hwdec_used:
+            who += f" + décodage {HWDEC_LABEL.get(job.hwdec_used, job.hwdec_used)}"
+        if len(self._pids) > 1 or getattr(job, "slot", 0):
+            who = f"Poste {getattr(job, 'slot', 0) + 1} · " + who
         return f"{who} · {format_load(self.monitor.latest)}"
 
     def _update_queue_job(self, job: EncodeJob) -> None:
@@ -1124,10 +1129,57 @@ class App(ctk.CTk):
         self._worker = threading.Thread(target=self._queue_worker, daemon=True)
         self._worker.start()
 
+    def _parallel_count(self) -> int:
+        """Encodages simultanés : « auto » = 2 avec une carte NVIDIA (2 encodeurs NVENC), sinon 1."""
+        val = self.settings.get("parallel_jobs", 0)
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            hw = self.settings.get("hardware_accel", "auto")
+            if hw == "auto":
+                self._hw_ready.wait(timeout=60)
+                hw = self.detected_hw or "none"
+            n = 2 if hw == "nvenc" else 1
+        return max(1, min(3, n))
+
     def _queue_worker(self):
-        stopped_by_user = False
+        """Coordinateur : lance N encodages en parallèle et attend la fin de la file."""
         self._keep_awake(True)
         self.monitor.start()
+        self._stopped_by_user = False
+        self._pids: Dict[int, int] = {}
+        self._encoders: List[Encoder] = []
+        try:
+            n = self._parallel_count()
+            if n > 1:
+                self._ui(self._log, f"{n} encodages en parallèle.")
+            workers = [threading.Thread(target=self._encode_loop, args=(i,), daemon=True) for i in range(n)]
+            for i, w in enumerate(workers):
+                w.start()
+                if i + 1 < n:
+                    time.sleep(0.5)   # décale les démarrages (analyse ffprobe, contrôle d'espace)
+            for w in workers:
+                w.join()
+        except Exception as e:
+            log_exception("Coordinateur")
+            self._ui(self._log, f"Erreur file d'attente : {e}", "ERROR")
+        finally:
+            self.monitor.stop()
+            self._keep_awake(False)
+            self.queue_running = False
+            stopped = self._stopped_by_user
+            self._ui(self._on_queue_changed)
+            self._ui(self._log, "File d'attente terminée." if not stopped else "Encodage arrêté.")
+            if self._shutdown_flag and not stopped and os.name == "nt":
+                self._ui(self._schedule_shutdown)
+
+    def _encode_loop(self, slot: int):
+        """Un « poste » d'encodage : prend le prochain fichier en attente jusqu'à la fin."""
+        enc = Encoder(self.encoder.ffmpeg_path)
+        with self._decision_lock:
+            self._encoders.append(enc)
         try:
             while self.queue_running:
                 job = self.queue.next_pending()
@@ -1136,31 +1188,38 @@ class App(ctk.CTk):
                 if self.settings.get("hardware_accel") == "auto":
                     self._hw_ready.wait(timeout=60)
                 finalize_job_settings(job, self.settings, self.detected_hw)
+                job.slot = slot  # type: ignore[attr-defined]
                 self._ui(self._render_queue)
 
                 def cb(p, msg, j=job):
                     j.progress = p
                     j.message = msg
                     proc = j.process
-                    self.monitor.set_pid(proc.pid if proc else None)
+                    self._set_slot_pid(slot, proc.pid if proc else None)
                     self._ui(self._update_queue_job, j)
-                self.monitor.set_pid(None)
-                self.encoder.encode(job, progress_cb=cb)
+                self._set_slot_pid(slot, None)
+                enc.encode(job, progress_cb=cb)
+                self._set_slot_pid(slot, None)
                 if job.status == "cancelled":
-                    stopped_by_user = True
+                    self._stopped_by_user = True
                 self._after_encode(job)
                 self._ui(self._on_queue_changed)
         except Exception as e:
-            log_exception("Worker")
+            log_exception(f"Poste d'encodage {slot + 1}")
             self._ui(self._log, f"Erreur file d'attente : {e}", "ERROR")
         finally:
-            self.monitor.stop()
-            self._keep_awake(False)
-            self.queue_running = False
-            self._ui(self._on_queue_changed)
-            self._ui(self._log, "File d'attente terminée." if not stopped_by_user else "Encodage arrêté.")
-            if self._shutdown_flag and not stopped_by_user and os.name == "nt":
-                self._ui(self._schedule_shutdown)
+            with self._decision_lock:
+                if enc in self._encoders:
+                    self._encoders.remove(enc)
+
+    def _set_slot_pid(self, slot: int, pid: Optional[int]):
+        with self._decision_lock:
+            if pid:
+                self._pids[slot] = pid
+            else:
+                self._pids.pop(slot, None)
+            pids = list(self._pids.values())
+        self.monitor.set_pids(pids)
 
     def _claim(self, job: EncodeJob) -> bool:
         """Un seul traitement par fichier encodé (auto, bouton, « tout remplacer »)."""
@@ -1307,9 +1366,14 @@ class App(ctk.CTk):
         threading.Thread(target=work, daemon=True).start()
 
     def _record_history(self, job: EncodeJob):
-        if getattr(job, "_history_saved", False):
-            return
-        job._history_saved = True  # type: ignore[attr-defined]
+        with self._decision_lock:
+            if getattr(job, "_history_saved", False):
+                return
+            job._history_saved = True  # type: ignore[attr-defined]
+        with self._history_lock:
+            self._record_history_locked(job)
+
+    def _record_history_locked(self, job: EncodeJob):
         self.history.append({
             "time": datetime.now().isoformat(timespec="seconds"),
             "file": job.final_path or job.video_path,
@@ -1323,11 +1387,20 @@ class App(ctk.CTk):
         })
         save_history(self.history)
 
+    def _stop_all_encoders(self):
+        with self._decision_lock:
+            encs = list(getattr(self, "_encoders", []))
+        for e in encs + [self.encoder]:
+            try:
+                e.stop()
+            except Exception:
+                pass
+
     def _stop_queue(self):
         if not self.queue_running:
             return
         self.queue_running = False
-        self.encoder.stop()
+        self._stop_all_encoders()
         self._log("Arrêt demandé…")
 
     @staticmethod
@@ -1425,6 +1498,10 @@ class App(ctk.CTk):
         v_fallback = check("Si le GPU échoue, recommencer automatiquement en processeur", "hw_fallback_cpu", True)
         v_deint = check("Désentrelacer automatiquement (DVD, TV)", "deinterlace", True)
         v_lowprio = check("Priorité basse (le PC reste utilisable pendant l'encodage)", "low_priority", True)
+        v_hwdec = check("Décoder aussi sur la carte graphique (soulage le processeur)", "hw_decode", True)
+        label("Encodages simultanés")
+        get_par = option([(0, "Auto (2 avec une carte NVIDIA, sinon 1)"), (1, "1 à la fois"),
+                          (2, "2 en parallèle"), (3, "3 en parallèle")], int(s.get("parallel_jobs", 0) or 0), 360)
 
         section("Audio et sous-titres")
         label("Débit AAC (pistes réencodées, par paire de canaux)")
@@ -1551,6 +1628,8 @@ class App(ctk.CTk):
             s["hw_fallback_cpu"] = v_fallback.get()
             s["deinterlace"] = v_deint.get()
             s["low_priority"] = v_lowprio.get()
+            s["hw_decode"] = v_hwdec.get()
+            s["parallel_jobs"] = get_par()
             s["audio_bitrate"] = get_ab()
             s["audio_channels"] = get_ch()
             s["keep_audio_copy"] = v_keep_a.get()

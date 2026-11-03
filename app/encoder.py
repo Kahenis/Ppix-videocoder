@@ -75,6 +75,8 @@ class EncodeJob:
     audio_layout: str = "keep"          # keep / 5.1 / stereo
     delete_original: bool = False       # supprimer la source après enregistrement vérifié
     cap_kbps: int = 0                   # plafond vidéo imposé (0 = calculé depuis la source)
+    hw_decode: bool = True              # décoder aussi sur la carte graphique si possible
+    hwdec_used: str = ""                # décodeur matériel réellement utilisé (cuda, d3d11va…)
     low_priority: bool = True
     container: str = "mp4"
     dry_run: bool = False
@@ -177,6 +179,28 @@ def video_bitrate_cap(info: Dict[str, Any], v0: Dict[str, Any], target: str) -> 
         "modern" if vc in ("hevc", "h265", "vp9", "av1") else "legacy")
     ratio = BITRATE_CAP_RATIO[family][target if target in ("hevc", "h264") else "hevc"]
     return max(CAP_MIN_KBPS, int(src * ratio))
+
+
+# Décodage matériel : codecs que la carte sait décoder (NVDEC / D3D11VA)
+HWDEC_CODECS = {"h264", "hevc", "mpeg2video", "vc1", "vp9", "av1", "wmv3"}
+HWDEC_LABEL = {"cuda": "NVDEC", "d3d11va": "D3D11VA", "qsv": "Quick Sync"}
+
+
+def hw_decoder_for(hw: str, v0: Dict[str, Any]) -> str:
+    """Décodeur matériel adapté à l'encodeur et à la source ('' = décodage processeur)."""
+    if hw not in ("nvenc", "qsv", "amf") or not v0:
+        return ""
+    codec = (v0.get("codec_name") or "").lower()
+    if codec not in HWDEC_CODECS:
+        return ""                         # Xvid/DivX (MPEG-4), WMV1/2, RealVideo… : processeur
+    pix = (v0.get("pix_fmt") or "").lower()
+    if codec == "h264" and ("10" in pix or "422" in pix or "444" in pix):
+        return ""                         # H.264 10 bits / 4:2:2 : non géré par NVDEC
+    if any(t in pix for t in ("422", "444")) and codec != "hevc":
+        return ""
+    if hw == "nvenc":
+        return "cuda"
+    return "d3d11va" if _WIN else ""
 
 
 def is_hdr_stream(v: Dict[str, Any]) -> bool:
@@ -383,8 +407,15 @@ class Encoder:
         v0 = videos[0] if videos else {}
 
         cmd = [self.ffmpeg_path, "-y", "-hide_banner", "-nostdin", "-loglevel", "warning",
-               "-analyzeduration", "50M", "-probesize", "50M",
-               "-i", job.video_path]
+               "-analyzeduration", "50M", "-probesize", "50M"]
+        hwdec = "" if job.audio_only else hw_decoder_for(job.hardware, v0) if job.hw_decode else ""
+        if hwdec:
+            # Décodage sur la carte : les images reviennent en mémoire pour les filtres
+            # éventuels (désentrelacement, mise à l'échelle) puis repartent vers l'encodeur.
+            cmd += ["-hwaccel", hwdec]
+            plan.append(f"décodage sur la carte graphique ({HWDEC_LABEL.get(hwdec, hwdec)})")
+        job.hwdec_used = hwdec
+        cmd += ["-i", job.video_path]
 
         # ---------------- mapping ----------------
         if job.audio_only:
@@ -675,12 +706,19 @@ class Encoder:
             job.status = "error"
             job.message = "Aucune piste TrueHD dans ce fichier (rien à convertir)."
             return
-        attempts = [job.hardware]
+        # Essais : GPU (encodage + décodage) → GPU (encodage seul) → processeur
+        want_dec = job.hw_decode
+        attempts = [(job.hardware, want_dec)]
+        if job.hardware != "none" and want_dec:
+            attempts.append((job.hardware, False))
         if job.hardware != "none" and job.hw_fallback:
-            attempts.append("none")
-        for n, hw in enumerate(attempts):
+            attempts.append(("none", False))
+        for n, (hw, dec) in enumerate(attempts):
             job.hardware = hw
+            job.hw_decode = dec
             cmd = self.build_command(job, info)
+            if dec and not job.hwdec_used and n + 1 < len(attempts) and attempts[n + 1][0] == hw:
+                attempts.pop(n + 1)   # pas de décodage matériel possible : inutile de réessayer sans
             log(f"  plan: {' | '.join(job.plan)}")
             log(f"  cmd: {subprocess.list2cmdline(cmd)}")
             if job.dry_run:
@@ -697,11 +735,14 @@ class Encoder:
             if ok:
                 break
             if n + 1 < len(attempts):
-                log(f"Échec {HARDWARE_SHORT.get(hw, hw)} — nouvel essai en CPU", level="WARN")
+                nxt_hw, _nxt_dec = attempts[n + 1]
+                what = ("sans décodage matériel" if nxt_hw == hw else "en CPU")
+                log(f"Échec {HARDWARE_SHORT.get(hw, hw)}{' + décodage ' + job.hwdec_used if job.hwdec_used else ''}"
+                    f" — nouvel essai {what}", level="WARN")
                 self.discard_output(job, quiet=True)
                 job.progress = 0.0
                 if progress_cb:
-                    progress_cb(0.0, f"Échec {HARDWARE_SHORT.get(hw, hw)} → reprise en CPU")
+                    progress_cb(0.0, f"Échec {HARDWARE_SHORT.get(hw, hw)} → reprise {what}")
         else:
             return  # toutes les tentatives ont échoué (message déjà posé)
 
@@ -718,7 +759,7 @@ class Encoder:
         job.progress = 100.0
         job.status = "done"
         gain = job.gain_ratio * 100
-        fb = " (repli CPU)" if job.hw_used == "none" and attempts[0] != "none" else ""
+        fb = " (repli CPU)" if job.hw_used == "none" and attempts[0][0] != "none" else ""
         job.message = f"Terminé en {_fmt_duration(time.time() - job.start_time)}{fb} · " + (
             f"−{gain:.0f} %" if gain >= 0 else f"+{-gain:.0f} % (plus gros)")
         log(f"Encode OK {job.output_size} bytes ({gain:.1f} % gagnés)")

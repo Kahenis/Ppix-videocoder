@@ -142,3 +142,54 @@ def test_scan_and_queue_multiselect():
         assert pump(app, lambda: [j.status for j in app.queue.snapshot()[:3]] == ["discarded"] * 3, 20)
     finally:
         app._close()
+
+
+@gui
+def test_two_parallel_encodes(tmp_path):
+    from app.gui import App
+    from tests.conftest import make_video
+    media = tmp_path / "m"
+    media.mkdir()
+    files = [make_video(media / f"F{i}.avi", dur=8, size="640x360") for i in range(4)]
+    app = App()
+    try:
+        app.settings.update(hardware_accel="none", parallel_jobs=2, auto_replace=True, preset="medium",
+                            network_root_asked=True)
+        app._show_page("queue")
+        for f in files:
+            v = VideoInfo(rating_key=f.stem, title=f.stem, library="", library_type="movie",
+                          file_path=str(f), container="avi", video_codec="mpeg4")
+            from app.jobs import make_job_for_video
+            app.queue.add(make_job_for_video(v, app.settings))
+        app._start_queue()
+        peak = {"n": 0, "slots": set(), "pids": 0}
+
+        def watch():
+            running = [j for j in app.queue.snapshot() if j.status == "running"]
+            peak["n"] = max(peak["n"], len(running))
+            peak["slots"] |= {getattr(j, "slot", None) for j in running}
+            peak["pids"] = max(peak["pids"], len(app._pids))
+            return not app.queue_running
+        assert pump(app, watch, 240)
+        assert peak["n"] == 2 and peak["slots"] >= {0, 1} and peak["pids"] == 2
+        assert [j.status for j in app.queue.snapshot()] == ["replaced"] * 4
+        assert sorted(p.name for p in media.iterdir()) == ["F0.mkv", "F1.mkv", "F2.mkv", "F3.mkv"]
+        assert len(app.history) == 4
+
+        # arrêt avec deux encodages en cours : les deux s'arrêtent, rien ne traîne
+        more = [make_video(media / f"G{i}.avi", dur=60, size="1280x720") for i in range(2)]
+        app.settings["preset"] = "veryslow"
+        for f in more:
+            v = VideoInfo(rating_key=f.stem, title=f.stem, library="", library_type="movie",
+                          file_path=str(f), container="avi", video_codec="mpeg4")
+            app.queue.add(make_job_for_video(v, app.settings))
+        app._start_queue()
+        assert pump(app, lambda: sum(j.status == "running" and j.progress > 0
+                                     for j in app.queue.snapshot()) == 2, 120)
+        app._stop_queue()
+        assert pump(app, lambda: not app._worker.is_alive(), 60)
+        st = [j.status for j in app.queue.snapshot()[4:]]
+        assert st == ["cancelled", "cancelled"]
+        assert not (media / ".ppix-travail").exists()
+    finally:
+        app._close()
