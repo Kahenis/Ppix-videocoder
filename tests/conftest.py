@@ -13,6 +13,15 @@ needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg/ffprobe absent"
 
 
 @pytest.fixture(autouse=True)
+def collect_tk_garbage():
+    """Libère dans le thread principal les objets Tk des fenêtres fermées par un test :
+    sinon un thread de fond peut les libérer plus tard et rester bloqué dans Tcl."""
+    yield
+    import gc
+    gc.collect()
+
+
+@pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
     """Config, journal et keyring isolés dans un HOME temporaire."""
     home = tmp_path / "home"

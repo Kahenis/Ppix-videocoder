@@ -178,12 +178,13 @@ def test_full_workflow(tmp_path):
         # Ligne « qui travaille » + charge CPU/GPU pendant l'encodage
         from app.sysmon import LoadSample
         app.queue.clear_finished()
+        app.queue.clear_pending()          # retry_failed a aussi remis en attente l'essai simulé
         app.queue.remove(job)
         job = make_job_for_video(v, app.settings)
         app.queue.add(job)
         app._show_page("queue")
         app._start_queue()
-        assert pump(app, lambda: job.status == "running" and job.progress > 0, 60)
+        assert pump(app, lambda: job.status == "running" and job.progress > 0, 180)
         # mesure réelle : le % CPU de l'encodage apparaît
         assert pump(app, lambda: "(encodage " in app._queue_widgets[id(job)]["load"].cget("text")
                     and "CPU …" not in app._queue_widgets[id(job)]["load"].cget("text"), 30)

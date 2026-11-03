@@ -21,6 +21,11 @@ from typing import Dict, List, Optional, Tuple
 
 from .logger import log
 
+try:   # importé ici (thread principal) et non dans le thread de mesure
+    import psutil  # type: ignore
+except Exception:  # pragma: no cover
+    psutil = None  # type: ignore
+
 _WIN = sys.platform == "win32"
 _NO_WINDOW = 0x08000000
 
@@ -241,10 +246,7 @@ class LoadMonitor:
     def start(self) -> None:
         """(Re)démarre la mesure. Chaque thread a son propre signal d'arrêt : un
         redémarrage rapide (arrêt puis relance de la file) ne perd plus la mesure."""
-        old = self._thread
-        self._stop.set()
-        if old and old.is_alive():
-            old.join(timeout=5)
+        self._stop.set()                 # l'ancien thread s'arrête seul (son propre signal)
         self._stop = threading.Event()
         self.latest = None
         self._thread = threading.Thread(target=self._loop, args=(self._stop,), daemon=True)
@@ -254,10 +256,6 @@ class LoadMonitor:
         self._stop.set()
 
     def _loop(self, stop: threading.Event) -> None:
-        try:
-            import psutil
-        except Exception:
-            psutil = None  # type: ignore
         gpu = None
         if _WIN:
             try:

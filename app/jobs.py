@@ -1,6 +1,7 @@
 """Création des jobs d'encodage et gestion thread-safe de la file."""
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import PurePath
 from typing import Callable, List, Optional
@@ -55,16 +56,56 @@ def make_job_for_video(v: VideoInfo, settings: dict, codec: Optional[str] = None
     return job
 
 
+def container_for_path(path: str) -> str:
+    ext = PurePath(path.replace("\\", "/")).suffix.lower()
+    return "mp4" if ext in (".mp4", ".m4v", ".mov") else "mkv"
+
+
+def default_local_destination(src: str) -> str:
+    """Destination proposée : le fichier d'origine lui-même (même nom, même dossier).
+    Un ancien format (AVI, WMV…) ne peut pas rester tel quel → même nom en .mkv."""
+    ext = PurePath(src.replace("\\", "/")).suffix.lower()
+    if ext in (".mkv", ".mp4", ".m4v"):
+        return src
+    return replace_extension(src, "mkv")
+
+
+def make_local_job(src: str, codec: str, audio_target: str, audio_layout: str, dest: str,
+                   delete_original: bool = False, info: Optional[dict] = None) -> EncodeJob:
+    """Job « Parcourir local » : fichier hors Plex, réglages choisis dans l'assistant."""
+    src_cont = PurePath(src.replace("\\", "/")).suffix.lstrip(".").lower()
+    job = EncodeJob(video_path=src, codec=codec if codec in SUPPORTED_CODECS else "hevc",
+                    source_container=src_cont, plex_path=src, local=True,
+                    audio_target=audio_target, audio_layout=audio_layout,
+                    delete_original=delete_original, final_path=dest)
+    v = next((s for s in (info or {}).get("streams") or [] if s.get("codec_type") == "video"), {})
+    try:
+        job.original_size = os.path.getsize(src)
+    except OSError:
+        pass
+    job._video_info = VideoInfo(  # type: ignore[attr-defined]
+        rating_key="", title=PurePath(src.replace("\\", "/")).stem, library="Local",
+        library_type="movie", file_path=src, file_size=job.original_size,
+        video_codec=(v.get("codec_name") or "").lower(), container=src_cont,
+        width=int(v.get("width") or 0), height=int(v.get("height") or 0))
+    return job
+
+
 def finalize_job_settings(job: EncodeJob, settings: dict, detected_hw: Optional[str]) -> None:
     """Applique les paramètres au moment du lancement (les réglages modifiés
     après l'ajout à la file sont pris en compte)."""
     from .config import resolve_hardware
-    local = resolve_local_path(job.plex_path or job.video_path, settings)
-    job.video_path = local
-    cont = resolve_output_container(job.source_container, settings)
-    job.container = cont
-    job.output_path = temp_output_path(local, cont)
-    job.final_path = replace_extension(local, cont)
+    if job.local:
+        cont = container_for_path(job.final_path)
+        job.container = cont
+        job.output_path = temp_output_path(job.final_path, cont)
+    else:
+        local = resolve_local_path(job.plex_path or job.video_path, settings)
+        job.video_path = local
+        cont = resolve_output_container(job.source_container, settings)
+        job.container = cont
+        job.output_path = temp_output_path(local, cont)
+        job.final_path = replace_extension(local, cont)
     job.crf = int(settings.get("crf", 24))
     job.preset = settings.get("preset", "medium")
     job.audio_bitrate = settings.get("audio_bitrate", "192k")
