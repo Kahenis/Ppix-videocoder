@@ -118,7 +118,7 @@ jobs:
         with:
           name: Ppix-Videocoder-windows
           path: Ppix-Videocoder-*-windows.zip
-          retention-days: 90
+          retention-days: 7
 
       - name: Create GitHub Release
         if: >-
