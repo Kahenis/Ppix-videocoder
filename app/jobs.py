@@ -7,6 +7,7 @@ from pathlib import PurePath
 from typing import Callable, List, Optional
 
 from .config import (
+    is_hevc,
     SUPPORTED_CODECS, apply_path_maps, parent_dir, replace_extension, resolve_output_container,
 )
 from .encoder import WORK_DIR, EncodeJob
@@ -38,8 +39,8 @@ def temp_output_path(local_src: str, container: str) -> str:
 def make_job_for_video(v: VideoInfo, settings: dict, codec: Optional[str] = None) -> EncodeJob:
     """Crée un job sans accès disque (le chemin local est résolu au lancement)."""
     codec = codec or settings.get("preferred_codec", "hevc")
-    if codec not in SUPPORTED_CODECS:
-        codec = "hevc"
+    if codec not in SUPPORTED_CODECS or is_hevc(v.video_codec):
+        codec = "hevc"   # une source H.265 reste en H.265
     src_cont = (v.container or PurePath(v.file_path.replace("\\", "/")).suffix.lstrip(".")).lower()
     job = EncodeJob(
         video_path=v.file_path,

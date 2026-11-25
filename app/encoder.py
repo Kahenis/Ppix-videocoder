@@ -76,6 +76,7 @@ class EncodeJob:
     delete_original: bool = False       # supprimer la source après enregistrement vérifié
     cap_kbps: int = 0                   # plafond vidéo imposé (0 = calculé depuis la source)
     hw_decode: bool = True              # décoder aussi sur la carte graphique si possible
+    optimize_hevc: bool = False         # source déjà en H.265 : optimisation confirmée (plafond 60 %)
     hwdec_used: str = ""                # décodeur matériel réellement utilisé (cuda, d3d11va…)
     low_priority: bool = True
     container: str = "mp4"
@@ -169,7 +170,8 @@ def source_video_kbps(info: Dict[str, Any], v0: Optional[Dict[str, Any]] = None)
     return max(0, total - others)
 
 
-def video_bitrate_cap(info: Dict[str, Any], v0: Dict[str, Any], target: str) -> int:
+def video_bitrate_cap(info: Dict[str, Any], v0: Dict[str, Any], target: str,
+                      optimize_hevc: bool = False) -> int:
     """Plafond de débit vidéo pour que le résultat ne soit jamais plus lourd que la source."""
     src = source_video_kbps(info, v0)
     if not src:
@@ -178,6 +180,8 @@ def video_bitrate_cap(info: Dict[str, Any], v0: Dict[str, Any], target: str) -> 
     family = "h264" if vc in ("h264", "avc", "avc1") else (
         "modern" if vc in ("hevc", "h265", "vp9", "av1") else "legacy")
     ratio = BITRATE_CAP_RATIO[family][target if target in ("hevc", "h264") else "hevc"]
+    if optimize_hevc and vc in ("hevc", "h265") and target == "hevc":
+        ratio = BITRATE_CAP_RATIO["h264"]["hevc"]   # « optimiser le H.265 » : même compression que H.264 → H.265
     return max(CAP_MIN_KBPS, int(src * ratio))
 
 
@@ -391,6 +395,10 @@ class Encoder:
         plan: List[str] = []
         _v = next((s for s in streams if s.get("codec_type") == "video"
                    and not (s.get("disposition") or {}).get("attached_pic")), {})
+        if not job.audio_only and job.codec != "hevc" and (_v.get("codec_name") or "").lower() == "hevc":
+            # Jamais de passage H.265 → H.264 (plus lourd, sans intérêt)
+            job.codec = "hevc"
+            plan.append("source déjà en H.265 : reste en H.265 (pas de passage en H.264)")
         if not job.audio_only and job.codec != "hevc" and is_hdr_stream(_v):
             # H.264 ne garde pas le HDR : l'image serait affichée trop sombre → H.265 imposé
             job.codec = "hevc"
@@ -447,7 +455,7 @@ class Encoder:
             w, h = int(v0.get("width") or 0), int(v0.get("height") or 0)
             plan.insert(0, f"vidéo copiée sans réencodage ({vc or '?'} {w}x{h})")
         else:
-            cap = job.cap_kbps or video_bitrate_cap(info, v0, job.codec)
+            cap = job.cap_kbps or video_bitrate_cap(info, v0, job.codec, optimize_hevc=job.optimize_hevc)
             if cap:
                 src_k = source_video_kbps(info, v0)
                 plan.append(f"débit vidéo plafonné à {cap} kb/s"

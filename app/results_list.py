@@ -10,7 +10,7 @@ from typing import Dict, List, Callable, Any, Optional, Tuple
 
 import customtkinter as ctk
 
-from .config import CODEC_CHOICE_LABELS
+from .config import CODEC_CHOICE_LABELS, normalize_codec
 from .plex_client import VideoInfo
 
 ACCENT = "#E5A00D"
@@ -76,6 +76,7 @@ class ResultsList:
         self._groups: Dict[int, List[str]] = {}     # index d'en-tête → clés du groupe
         self.anchor: Optional[str] = None           # point de départ pour Maj + clic
         self.row_boxes: Dict[str, Any] = {}
+        self.codec_buttons: Dict[str, Any] = {}
 
     def winfo_exists(self) -> bool:
         try:
@@ -332,13 +333,15 @@ class ResultsList:
         for w in (l1, l2):
             w.bind("<Button-1>", lambda e, video=v: self.click(video, e), add="+")
 
-        cur = codec_choice.get(key, "hevc")
+        locked = normalize_codec(v.video_codec) == "hevc" and not v.audio_only
+        cur = "hevc" if locked else codec_choice.get(key, "hevc")
         if cur not in CODEC_CHOICE_LABELS:
             cur = "hevc"
         btn = ctk.CTkButton(
             row, text=CODEC_CHOICE_LABELS[cur], width=110, height=26,
             fg_color="#333", hover_color="#444",
         )
+        self.codec_buttons[key] = btn
 
         def cycle(k=key, b=btn, video_for_cycle=v):
             order = list(CODEC_CHOICE_LABELS.keys())
@@ -355,7 +358,10 @@ class ResultsList:
                 except Exception:
                     pass
 
-        btn.configure(command=cycle)
+        if locked:
+            btn.configure(state="disabled", text="H.265 (optimiser)")   # pas de passage H.265 → H.264
+        else:
+            btn.configure(command=cycle)
         btn.pack(side="left", padx=4)
 
         self._row_buttons(row, v)

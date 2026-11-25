@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable
+from typing import Callable, Optional
 
 import customtkinter as ctk
 
@@ -42,7 +42,8 @@ def _close(box) -> None:
 
 
 def confirm(parent, title: str, message: str, on_yes: Callable[[], None],
-            yes_label: str = "Oui", no_label: str = "Annuler", danger: bool = False) -> None:
+            yes_label: str = "Oui", no_label: str = "Annuler", danger: bool = False,
+            on_no: Optional[Callable[[], None]] = None):
     box = _modal(parent, title, "480x230")
     ctk.CTkLabel(box, text=message, wraplength=440, justify="left", text_color=TEXT).pack(
         padx=18, pady=18, fill="both", expand=True)
@@ -56,8 +57,15 @@ def confirm(parent, title: str, message: str, on_yes: Callable[[], None],
     ctk.CTkButton(row, text=yes_label, fg_color="#5C1A1A" if danger else ACCENT,
                   text_color="#fff" if danger else "#111",
                   hover_color="#8A3618" if danger else ACCENT_HOVER, command=yes).pack(side="left", padx=6)
-    ctk.CTkButton(row, text=no_label, fg_color="#333", command=lambda: _close(box)).pack(side="left", padx=6)
+    def no():
+        _close(box)
+        if on_no:
+            on_no()
+
+    ctk.CTkButton(row, text=no_label, fg_color="#333", command=no).pack(side="left", padx=6)
     box.protocol("WM_DELETE_WINDOW", lambda: _close(box))
+    box.yes, box.no = yes, no     # (tests)
+    return box
 
 
 def ask_network_root_before_scan(app) -> None:

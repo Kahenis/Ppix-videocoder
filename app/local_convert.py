@@ -16,7 +16,8 @@ from typing import Any, Dict
 
 import customtkinter as ctk
 
-from .encoder import LOCAL_AUDIO_BITRATES, is_hdr_stream
+from .config import is_light_hevc
+from .encoder import LOCAL_AUDIO_BITRATES, is_hdr_stream, source_video_kbps, video_bitrate_cap
 from .jobs import container_for_path, default_local_destination, make_local_job
 from .logger import log
 from .theme import ACCENT, ACCENT_HOVER, BG, CARD, MUTED, PANEL, TEXT, WARN
@@ -99,6 +100,8 @@ class LocalConvertDialog:
         self.delete_original = self._same_stem_same_folder(self.dest)
         self.step = 0
         self.hdr = False
+        self.src_hevc = False          # source déjà en H.265 → question « optimiser ? »
+        self.src_video: Dict[str, Any] = {}
         w = self.win = ctk.CTkToplevel(app)
         w.title("Convertir un fichier local")
         w.geometry("660x560")
@@ -141,7 +144,9 @@ class LocalConvertDialog:
                 return
             v = next(s for s in info["streams"] if s.get("codec_type") == "video")
             self.hdr = is_hdr_stream(v)
-            if self.hdr:
+            self.src_hevc = (v.get("codec_name") or "").lower() == "hevc"
+            self.src_video = v
+            if self.hdr or self.src_hevc:
                 self.codec = "hevc"
             self.lbl_info.configure(text=describe_source(info, self.path, self.app.encoder), text_color=TEXT)
             self.btn_next.configure(state="normal")
@@ -163,7 +168,8 @@ class LocalConvertDialog:
             c.destroy()
         self.lbl_step.configure(text=f"Étape {step + 1} / 3")
         self.btn_back.configure(state="normal" if step > 0 else "disabled")
-        self.btn_next.configure(text="Lancer la conversion" if step == 2 else "Suivant →")
+        self.btn_next.configure(text="Lancer la conversion" if step == 2
+                                else "Optimiser →" if step == 0 and self.src_hevc else "Suivant →")
         [self._step_video, self._step_audio, self._step_dest][step]()
 
     def _choice_buttons(self, parent, choices, current, on_pick, width=260):
@@ -193,10 +199,38 @@ class LocalConvertDialog:
             self.body, [("hevc", "H.265 (HEVC) — fichier plus léger, recommandé"),
                         ("h264", "H.264 (AVC) — compatible avec tout")],
             cur, lambda k: setattr(self, "codec", k), width=420)
-        if self.hdr:
+        if self.src_hevc:
+            self.video_buttons["h264"].configure(state="disabled")
+            ctk.CTkLabel(self.body, text="Source déjà en H.265 : passage en H.264 non proposé.",
+                         text_color=MUTED, wraplength=560, justify="left").pack(anchor="w", padx=16, pady=(6, 0))
+            q, color = self.optimize_question()
+            self.lbl_optimize = ctk.CTkLabel(self.body, text=q, text_color=color, wraplength=580, justify="left",
+                                             font=ctk.CTkFont(weight="bold"))
+            self.lbl_optimize.pack(anchor="w", padx=16, pady=(10, 4))
+        elif self.hdr:
             self.video_buttons["h264"].configure(state="disabled")
             ctk.CTkLabel(self.body, text="Source HDR : H.265 obligatoire (le H.264 donnerait une image trop sombre).",
                          text_color=WARN, wraplength=560, justify="left").pack(anchor="w", padx=16, pady=6)
+
+    def optimize_question(self):
+        """« Ce fichier est déjà en H.265 (12,4 Mb/s · 8,6 Go). Voulez-vous l'optimiser ? »"""
+        v = self.src_video
+        kbps = source_video_kbps(self.info, v)
+        try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            size = 0
+        dur = self.app.encoder.probe_duration(self.info)
+        cap = video_bitrate_cap(self.info, v, "hevc", optimize_hevc=True)
+        est = size - max(0, (kbps - cap)) * 1000 / 8 * dur if (kbps and dur) else 0
+        rate = f"{kbps / 1000:.1f} Mb/s · " if kbps else ""
+        txt = (f"Ce fichier est déjà en H.265 ({rate}{_fmt_size(size)}). Voulez-vous l'optimiser ?"
+               + (f"\nTaille estimée après optimisation : ≈ {_fmt_size(est)}" if est else ""))
+        if is_light_hevc(kbps, int(v.get("width") or 0), int(v.get("height") or 0)):
+            txt += ("\n⚠ Déjà très compressé : peu de place à gagner, et chaque réencodage "
+                    "fait perdre un peu de qualité.")
+            return txt, WARN
+        return txt, TEXT
 
     def _step_audio(self):
         ctk.CTkLabel(self.body, text="Son (appliqué à chaque piste audio) :", text_color=TEXT,
@@ -348,9 +382,11 @@ class LocalConvertDialog:
         if parent and not os.path.isdir(parent):
             self.dest_note.configure(text=f"Dossier introuvable : {parent}", text_color=WARN)
             return False
-        job = make_local_job(self.path, self.codec, self.audio_target, self.audio_layout, self.dest,
+        job = make_local_job(self.path, "hevc" if self.src_hevc else self.codec, self.audio_target,
+                             self.audio_layout, self.dest,
                              delete_original=self.delete_original and not self._is_same_file(self.dest),
                              info=self.info)
+        job.optimize_hevc = self.src_hevc   # confirmé par « Optimiser → »
         if not self.app.queue.add(job):
             self.lbl_info.configure(text="Ce fichier est déjà dans la file d'encodage.", text_color=WARN)
             return False
