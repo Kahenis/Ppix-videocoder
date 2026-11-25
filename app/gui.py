@@ -1124,10 +1124,42 @@ class App(ctk.CTk):
         if not self.queue.count("pending"):
             self._log("Aucun fichier en attente.")
             return
+        hevc_jobs = [j for j in self.queue.snapshot() if j.status == "pending" and self._needs_hevc_confirm(j)]
+        if hevc_jobs:
+            n = len(hevc_jobs)
+            self._hevc_dialog = confirm(
+                self, "Fichiers déjà en H.265",
+                (f"{n} fichier(s) de la file " + ("est" if n == 1 else "sont") + " déjà en H.265.\n\n"
+                 "Les optimiser ? Ils seront réencodés en H.265 avec la même compression qu'un passage "
+                 "H.264 → H.265 (environ 40 % plus légers). « Non » les retire de la file."),
+                lambda: self._hevc_decision(hevc_jobs, True), yes_label="Optimiser",
+                no_label="Non, les retirer", on_no=lambda: self._hevc_decision(hevc_jobs, False))
+            return
         self.queue_running = True
         self._log("Encodage démarré" + (" (mode essai)" if self.settings.get("dry_run") else "") + ".")
         self._worker = threading.Thread(target=self._queue_worker, daemon=True)
         self._worker.start()
+
+    @staticmethod
+    def _needs_hevc_confirm(job: EncodeJob) -> bool:
+        vinfo = getattr(job, "_video_info", None)
+        return (not job.audio_only and not job.optimize_hevc and not getattr(job, "_repair", False)
+                and normalize_codec(getattr(vinfo, "video_codec", "") or "") == "hevc")
+
+    def _hevc_decision(self, jobs: List[EncodeJob], optimize: bool):
+        if optimize:
+            for j in jobs:
+                j.optimize_hevc = True
+                j.codec = "hevc"
+            self._log(f"{len(jobs)} fichier(s) H.265 à optimiser.")
+        else:
+            for j in jobs:
+                if j.status == "pending":
+                    self._remove_job(j)
+            self._log(f"{len(jobs)} fichier(s) H.265 retiré(s) de la file.")
+        self._on_queue_changed()
+        if self.queue.count("pending"):
+            self._start_queue()
 
     def _parallel_count(self) -> int:
         """Encodages simultanés : « auto » = 2 avec une carte NVIDIA (2 encodeurs NVENC), sinon 1."""
@@ -1765,6 +1797,7 @@ class App(ctk.CTk):
                                          self.settings.get("preferred_codec", "hevc"))
                 if cf.grew:
                     job.cap_kbps = cf.cap_kbps()   # revenir sous la taille d'avant conversion
+                job._repair = True   # réparation d'un fichier déjà converti : pas de question « optimiser ? »
                 if self.queue.add(job):
                     n += 1
             self._log(f"{n} fichier(s) ajouté(s) à la file pour réencodage (image-clé toutes les 2 s).")

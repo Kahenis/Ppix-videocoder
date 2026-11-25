@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "Ppix-Videocoder"
-APP_VERSION = "1.8.5"
+APP_VERSION = "1.8.6"
 CLIENT_IDENTIFIER = "ppix-videocoder-windows-v1"
 KEYRING_SERVICE = "Ppix-Videocoder"
 KEYRING_USER = "plex-token"
@@ -213,6 +213,15 @@ def save_history(history: list) -> None:
 def normalize_codec(codec: str) -> str:
     c = (codec or "").lower().strip()
     return CODEC_ALIASES.get(c, c)
+
+
+def is_hevc(codec: str) -> bool:
+    return normalize_codec(codec) == "hevc"
+
+
+def is_light_hevc(video_kbps: float, width: int, height: int) -> bool:
+    """H.265 déjà très compressé (≈ < 3 Mb/s en 1080p) : peu à gagner, perte de qualité."""
+    return bool(video_kbps) and video_kbps < heavy_threshold_kbps(3, width, height)
 
 
 def is_codec_acceptable(video_codec: str, min_keep: str) -> bool:

@@ -316,8 +316,8 @@ class PlexClient:
             if not reason:
                 continue
             rec = preferred_codec if preferred_codec in SUPPORTED_CODECS else "hevc"
-            if normalize_codec(video_codec) == "h264":
-                rec = "hevc"  # réencoder un H.264 trop lourd en H.264 n'a pas de sens
+            if normalize_codec(video_codec) in ("h264", "hevc"):
+                rec = "hevc"  # H.264 lourd → H.265 ; H.265 reste H.265 (jamais de passage en H.264)
             for part in media.parts or []:
                 file_path = part.file or ""
                 if not file_path:
